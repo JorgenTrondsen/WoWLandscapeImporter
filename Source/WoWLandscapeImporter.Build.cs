@@ -43,6 +43,8 @@ public class WoWLandscapeImporter : ModuleRules
 				"Engine",
 				"Slate",
 				"SlateCore",
+				"Json",
+				"Landscape",
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);

@@ -4,12 +4,11 @@
 
 #include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "WoWLandscapeImporterStyle.h"
+#include "Style/WoWLandscapeImporterStyle.h"
 
 class FWoWLandscapeImporterCommands : public TCommands<FWoWLandscapeImporterCommands>
 {
 public:
-
 	FWoWLandscapeImporterCommands()
 		: TCommands<FWoWLandscapeImporterCommands>(TEXT("WoWLandscapeImporter"), NSLOCTEXT("Contexts", "WoWLandscapeImporter", "WoWLandscapeImporter Plugin"), NAME_None, FWoWLandscapeImporterStyle::GetStyleSetName())
 	{
@@ -19,5 +18,5 @@ public:
 	virtual void RegisterCommands() override;
 
 public:
-	TSharedPtr< FUICommandInfo > OpenPluginWindow;
+	TSharedPtr<FUICommandInfo> OpenPluginWindow;
 };
