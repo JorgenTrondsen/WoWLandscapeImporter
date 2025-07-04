@@ -30,7 +30,7 @@ public:
 	FReply OnImportButtonClicked();
 
 	/** Function to import heightmaps */
-	void ImportHeightmaps(const FString &DirectoryPath);
+	void ImportLandscape(const FString &DirectoryPath);
 
 private:
 	void RegisterMenus();

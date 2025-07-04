@@ -21,7 +21,7 @@
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonReader.h"
-#include "HeightmapHelper/HeightmapHelper.h"
+#include "WoWTileHelper.h"
 #include "Landscape.h"
 #include "LandscapeInfo.h"
 #include "Engine/World.h"
@@ -96,7 +96,7 @@ FReply FWoWLandscapeImporterModule::OnImportButtonClicked()
 
 		if (bFolderSelected && !SelectedDirectory.IsEmpty())
 		{
-			ImportHeightmaps(SelectedDirectory);
+			ImportLandscape(SelectedDirectory);
 		}
 		else if (!bFolderSelected)
 		{
@@ -107,7 +107,7 @@ FReply FWoWLandscapeImporterModule::OnImportButtonClicked()
 	return FReply::Handled();
 }
 
-void FWoWLandscapeImporterModule::ImportHeightmaps(const FString &DirectoryPath)
+void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 {
 	IPlatformFile &PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 
@@ -174,7 +174,7 @@ void FWoWLandscapeImporterModule::ImportHeightmaps(const FString &DirectoryPath)
 			}
 		}
 
-		TArray<Tile> TempTiles;
+		TArray<Tile> Tiles1D;
 		uint8 ColumnOrigin = 255;
 		uint8 RowOrigin = 255;
 		uint8 ColumnMax = 0;
@@ -207,7 +207,7 @@ void FWoWLandscapeImporterModule::ImportHeightmaps(const FString &DirectoryPath)
 				NewTile.HeightmapData.AddUninitialized(DataCount);
 				FMemory::Memcpy(NewTile.HeightmapData.GetData(), FileData.GetData(), FileData.Num());
 
-				TempTiles.Add(NewTile);
+				Tiles1D.Add(NewTile);
 			}
 			else
 			{
@@ -232,7 +232,7 @@ void FWoWLandscapeImporterModule::ImportHeightmaps(const FString &DirectoryPath)
 		}
 
 		// Second pass: Place tiles in the 2D array & and import the tile as landscape
-		for (Tile &CurrentTile : TempTiles)
+		for (Tile &CurrentTile : Tiles1D)
 		{
 			const uint8 ArrayColumn = CurrentTile.Column - ColumnOrigin;
 			const uint8 ArrayRow = CurrentTile.Row - RowOrigin;
@@ -248,16 +248,16 @@ void FWoWLandscapeImporterModule::ImportHeightmaps(const FString &DirectoryPath)
 			TArray<uint16> TopLeftTileData;
 
 			if (TopTile)
-				TopTileData = HeightmapHelper::GetRows(TopTile->HeightmapData, (ArrayRow * 2));
+				TopTileData = WoWTileHelper::GetRows(TopTile->HeightmapData, 257, (ArrayRow * 2));
 
 			if (LeftTile)
-				LeftTileData = HeightmapHelper::GetColumns(LeftTile->HeightmapData, (ArrayColumn * 2));
+				LeftTileData = WoWTileHelper::GetColumns(LeftTile->HeightmapData, 257, (ArrayColumn * 2));
 
 			if (TopLeftTile)
-				TopLeftTileData = HeightmapHelper::GetCorner(TopLeftTile->HeightmapData, (ArrayColumn * 2), (ArrayRow * 2));
+				TopLeftTileData = WoWTileHelper::GetCorner(TopLeftTile->HeightmapData, 257, (ArrayColumn * 2), (ArrayRow * 2));
 
-			TArray<uint16> HeightmapToImport = HeightmapHelper::ExpandHeightmap(CurrentTile.HeightmapData, TopTileData, LeftTileData, TopLeftTileData, (ArrayColumn * 2), (ArrayRow * 2));
-			HeightmapToImport = HeightmapHelper::CropHeightmap(HeightmapToImport, (ArrayColumn * 2));
+			TArray<uint16> HeightmapToImport = WoWTileHelper::ExpandTile(CurrentTile.HeightmapData, TopTileData, LeftTileData, TopLeftTileData, 257, (ArrayColumn * 2), (ArrayRow * 2));
+			HeightmapToImport = WoWTileHelper::CropTile(HeightmapToImport, (257 + (ArrayColumn * 2)), 255);
 
 			// Spawn the Landscape actor
 			ALandscape *Landscape = GEditor->GetEditorWorldContext().World()->SpawnActor<ALandscape>();
