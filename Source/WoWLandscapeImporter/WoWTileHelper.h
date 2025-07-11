@@ -1,19 +1,23 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "WoWLandscapeImporter.h"
 
 namespace WoWTileHelper
 {
     template <typename T>
-    TArray<T> CropTile(const TArray<T> &ExpandedData, const uint16 ExpandedWidth, const uint16 CroppedWidth)
+    TArray<T> CropTile(const TArray<T> &ExpandedData, const uint16 ExpandedWidth, const uint16 CropStartX, const uint16 CropStartY, const uint16 CropEndX, const uint16 CropEndY)
     {
-        TArray<T> OutData;
-        OutData.SetNumUninitialized(CroppedWidth * CroppedWidth);
+        const uint16 CroppedWidth = CropEndX - CropStartX;
+        const uint16 CroppedHeight = CropEndY - CropStartY;
 
-        for (uint16 y = 0; y < CroppedWidth; ++y)
+        TArray<T> OutData;
+        OutData.SetNumUninitialized(CroppedWidth * CroppedHeight);
+
+        for (uint16 y = 0; y < CroppedHeight; ++y)
         {
-            // Copy the first CroppedWidth pixels from each row of the input tile
-            FMemory::Memcpy(&OutData[y * CroppedWidth], &ExpandedData[y * (ExpandedWidth)], CroppedWidth * sizeof(T));
+            // Copy the row of data from the expanded tile, starting at CropStartX and ending at CropEndX
+            FMemory::Memcpy(&OutData[y * CroppedWidth], &ExpandedData[(CropStartY + y) * ExpandedWidth + CropStartX], CroppedWidth * sizeof(T));
         }
 
         return OutData;
@@ -74,12 +78,12 @@ namespace WoWTileHelper
     }
 
     template <typename T>
-    TArray<T> GetColumns(const TArray<T> &BaseData, const uint16 TileSize, const uint16 NumColumns)
+    TArray<T> GetColumns(const TArray<T> &BaseData, const uint16 TileSize, const uint16 NumColumns, const bool bSkipEdge)
     {
         TArray<T> OutData;
         OutData.SetNumUninitialized(TileSize * NumColumns);
 
-        const uint16 StartColumn = (TileSize - 1) - NumColumns; // Skip the edge pixel (TileSize - 1)
+        const uint16 StartColumn = bSkipEdge ? (TileSize - 1) - NumColumns : TileSize - NumColumns; // Skip the edge pixel (TileSize - 1) if bSkipEdge is true
 
         for (uint16 y = 0; y < TileSize; ++y)
         {
@@ -91,12 +95,12 @@ namespace WoWTileHelper
     }
 
     template <typename T>
-    TArray<T> GetRows(const TArray<T> &BaseData, const uint16 TileSize, const uint16 NumRows)
+    TArray<T> GetRows(const TArray<T> &BaseData, const uint16 TileSize, const uint16 NumRows, const bool bSkipEdge)
     {
         TArray<T> OutData;
         OutData.SetNumUninitialized(TileSize * NumRows);
 
-        const uint16 StartRow = (TileSize - 1) - NumRows; // Skip the edge pixel (TileSize - 1)
+        const uint16 StartRow = bSkipEdge ? (TileSize - 1) - NumRows : TileSize - NumRows; // Skip the edge pixel (TileSize - 1) if bSkipEdge is true
 
         for (uint16 y = 0; y < NumRows; ++y)
         {
@@ -108,13 +112,13 @@ namespace WoWTileHelper
     }
 
     template <typename T>
-    TArray<T> GetCorner(const TArray<T> &BaseData, const uint16 TileSize, const uint16 CornerSizeX, const uint16 CornerSizeY)
+    TArray<T> GetCorner(const TArray<T> &BaseData, const uint16 TileSize, const uint16 CornerSizeX, const uint16 CornerSizeY, const bool bSkipEdge)
     {
         TArray<T> OutData;
         OutData.SetNumUninitialized(CornerSizeX * CornerSizeY);
 
-        const uint16 CornerStartX = (TileSize - 1) - CornerSizeX; // Skip the edge pixel (TileSize - 1)
-        const uint16 CornerStartY = (TileSize - 1) - CornerSizeY;
+        const uint16 CornerStartX = bSkipEdge ? (TileSize - 1) - CornerSizeX : TileSize - CornerSizeX; // Skip the edge pixel (TileSize - 1) if bSkipEdge is true
+        const uint16 CornerStartY = bSkipEdge ? (TileSize - 1) - CornerSizeY : TileSize - CornerSizeY;
 
         for (uint16 y = 0; y < CornerSizeY; ++y)
         {
@@ -123,5 +127,95 @@ namespace WoWTileHelper
         }
 
         return OutData;
+    }
+
+    TArray<Chunk> ExtractTileChunks(const TArray<Chunk> &BaseChunks, const TArray<Chunk> &TopRowChunks, const TArray<Chunk> &LeftColumnChunks, const TArray<Chunk> &TopLeftCornerChunks, const uint16 NumColumns, const uint16 NumRows)
+    {
+        // The formula for slicing the BaseChunks array into the final output array
+        const uint16 ColumnsToSlice = (8 + NumColumns) / 64;
+        const uint16 RowsToSlice = (8 + NumRows) / 64;
+
+        // The formula for merging the neighboring chunk arrays into the final output array
+        const uint16 ColumnsToMerge = FMath::CeilToInt((float)NumColumns / 64.0f);
+        const uint16 RowsToMerge = FMath::CeilToInt((float)NumRows / 64.0f);
+
+        // Calculate the dimensions of the final output grid.
+        const uint16 NewGridWidth = (16 - ColumnsToSlice) + ColumnsToMerge;
+        const uint16 NewGridHeight = (16 - RowsToSlice) + RowsToMerge;
+
+        TArray<Chunk> OutArray;
+        OutArray.SetNum(NewGridWidth * NewGridHeight);
+
+        // Iterate through every (Row, Col) of the destination grid.
+        for (uint16 Row = 0; Row < NewGridHeight; ++Row)
+        {
+            for (uint16 Col = 0; Col < NewGridWidth; ++Col)
+            {
+                const uint16 DestIndex = Row * NewGridWidth + Col;
+
+                // Determine which source array to pull from based on the (Row, Col).
+                if (Row < RowsToMerge && Col < ColumnsToMerge)
+                {
+                    // TOP-LEFT CORNER Section: Pull from the bottom-right of TopLeftCornerChunks.
+                    if (TopLeftCornerChunks.Num() > 0)
+                    {
+                        const uint16 SourceRow = (16 - RowsToMerge) + Row;
+                        const uint16 SourceCol = (16 - ColumnsToMerge) + Col;
+                        const uint16 SourceIndex = SourceRow * 16 + SourceCol;
+                        OutArray[DestIndex] = TopLeftCornerChunks[SourceIndex];
+                    }
+                    else
+                    {
+                        OutArray[DestIndex] = Chunk();
+                    }
+                }
+                else if (Row < RowsToMerge)
+                {
+                    // TOP ROW Section: Pull from the bottom rows of TopRowChunks.
+                    if (TopRowChunks.Num() > 0)
+                    {
+                        const uint16 SourceRow = (16 - RowsToMerge) + Row;
+                        const uint16 SourceCol = Col - ColumnsToMerge; // Adjust column to be relative to this section
+                        const uint16 SourceIndex = SourceRow * 16 + SourceCol;
+                        OutArray[DestIndex] = TopRowChunks[SourceIndex];
+                    }
+                    else
+                    {
+                        OutArray[DestIndex] = Chunk();
+                    }
+                }
+                else if (Col < ColumnsToMerge)
+                {
+                    // LEFT COLUMN Section: Pull from the right columns of LeftColumnChunks.
+                    if (LeftColumnChunks.Num() > 0)
+                    {
+                        const uint16 SourceRow = Row - RowsToMerge; // Adjust row to be relative to this section
+                        const uint16 SourceCol = (16 - ColumnsToMerge) + Col;
+                        const uint16 SourceIndex = SourceRow * 16 + SourceCol;
+                        OutArray[DestIndex] = LeftColumnChunks[SourceIndex];
+                    }
+                    else
+                    {
+                        OutArray[DestIndex] = Chunk();
+                    }
+                }
+                else
+                {
+                    // BASE Section: Pull from the top-left of BaseChunks.
+                    if (BaseChunks.Num() > 0)
+                    {
+                        const uint16 SourceRow = Row - RowsToMerge;
+                        const uint16 SourceCol = Col - ColumnsToMerge;
+                        const uint16 SourceIndex = SourceRow * 16 + SourceCol;
+                        OutArray[DestIndex] = BaseChunks[SourceIndex];
+                    }
+                    else
+                    {
+                        OutArray[DestIndex] = Chunk();
+                    }
+                }
+            }
+        }
+        return OutArray;
     }
 }

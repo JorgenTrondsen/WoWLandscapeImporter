@@ -1,23 +1,17 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
-
 #include "WoWLandscapeImporter.h"
 #include "Style/WoWLandscapeImporterStyle.h"
 #include "Commands/WoWLandscapeImporterCommands.h"
-#include "LevelEditor.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
-#include "Slate/SlateGameResources.h"
 #include "ToolMenus.h"
 #include "DesktopPlatformModule.h"
 #include "IDesktopPlatform.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
-#include "Engine/Engine.h"
-#include "Styling/AppStyle.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonReader.h"
@@ -25,6 +19,18 @@
 #include "Landscape.h"
 #include "LandscapeInfo.h"
 #include "Engine/World.h"
+#include "ImageUtils.h"
+#include "IImageWrapperModule.h"
+#include "IImageWrapper.h"
+#include "EditorAssetLibrary.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
+#include "Modules/ModuleManager.h"
+#include "LandscapeLayerInfoObject.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Engine/Engine.h"
+#include "UObject/Package.h"
+#include "LandscapeEdit.h"
 
 static const FName WoWLandscapeImporterTabName("WoWLandscapeImporter");
 
@@ -109,47 +115,26 @@ FReply FWoWLandscapeImporterModule::OnImportButtonClicked()
 
 void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 {
-	IPlatformFile &PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	TArray<FString> HeightmapFiles;
+	TArray<FString> AlphamapPNGs;
+	TArray<FString> AlphamapJSONs;
 
-	TArray<FString> LandscapeFiles;
+	// Find all required files in the directory
+	FString SearchPattern = FPaths::Combine(DirectoryPath, TEXT("*.r16"));
+	IFileManager::Get().FindFiles(HeightmapFiles, *SearchPattern, true, false);
+	SearchPattern = FPaths::Combine(DirectoryPath, TEXT("tex_*.png"));
+	IFileManager::Get().FindFiles(AlphamapPNGs, *SearchPattern, true, false);
+	SearchPattern = FPaths::Combine(DirectoryPath, TEXT("tex_*.json"));
+	IFileManager::Get().FindFiles(AlphamapJSONs, *SearchPattern, true, false);
 
-	// Use a visitor to find .r16 files
-	class FDirectoryVisitor : public IPlatformFile::FDirectoryVisitor
+	// Check if we found all required files
+	if (HeightmapFiles.IsEmpty() || AlphamapPNGs.IsEmpty() || AlphamapJSONs.IsEmpty())
 	{
-	public:
-		TArray<FString> &LandscapeFilesRef;
-		FString BasePath;
-
-		FDirectoryVisitor(const FString &InBasePath, TArray<FString> &InLandscapeFiles)
-			: LandscapeFilesRef(InLandscapeFiles), BasePath(InBasePath) {}
-
-		virtual bool Visit(const TCHAR *FilenameOrDirectory, bool bIsDirectory) override
-		{
-			if (!bIsDirectory)
-			{
-				FString FileName = FPaths::GetCleanFilename(FString(FilenameOrDirectory));
-
-				// Only collect .r16 files
-				if (FileName.EndsWith(TEXT(".r16")))
-				{
-					LandscapeFilesRef.Add(FileName);
-				}
-			}
-			return true;
-		}
-	};
-
-	FDirectoryVisitor Visitor(DirectoryPath, LandscapeFiles);
-	PlatformFile.IterateDirectory(*DirectoryPath, Visitor);
-
-	// Check if we found any .r16 files and update status message
-	if (LandscapeFiles.IsEmpty())
-	{
-		UpdateStatusMessage(TEXT("No landscape files (.r16) found in selected directory"), true);
+		UpdateStatusMessage(TEXT("Missing either: R16 files, Alphamap PNGs, Alphamap JSONs"), true);
 	}
 	else
 	{
-		double Zscale = 0.0;
+		double_t Zscale = 0.0;
 
 		// Read heightmap metadata JSON and extract heightmap range
 		FString MetadataPath = FPaths::Combine(DirectoryPath, TEXT("heightmap_metadata.json"));
@@ -161,16 +146,10 @@ void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 
 			if (FJsonSerializer::Deserialize(Reader, JsonObject) && JsonObject.IsValid())
 			{
-				const TSharedPtr<FJsonObject> *HeightRangeObject;
-				if (JsonObject->TryGetObjectField(TEXT("height_range"), HeightRangeObject) && HeightRangeObject->IsValid())
-				{
-					double RangeValue;
-					if ((*HeightRangeObject)->TryGetNumberField(TEXT("range"), RangeValue))
-					{
-						Zscale = RangeValue * 91.44;	 // RangeValue is in yards, convert to centimeters(1 yard = 91.44 cm)
-						Zscale = (Zscale / 51200) * 100; // Convert to percentage scale
-					}
-				}
+				TSharedPtr<FJsonObject> HeightRangeObject = JsonObject->GetObjectField(TEXT("height_range"));
+				double_t Range = HeightRangeObject->GetNumberField(TEXT("range"));
+				Zscale = Range * 91.44;			 // RangeValue is in yards, convert to centimeters (1 yard = 91.44 cm)
+				Zscale = (Zscale / 51200) * 100; // Convert to percentage scale
 			}
 		}
 
@@ -180,11 +159,11 @@ void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 		uint8 ColumnMax = 0;
 		uint8 RowMax = 0;
 
-		// First pass: collect tiles and find bounds
-		for (const FString &FileName : LandscapeFiles)
+		// First pass: collect filedata, metadata and find bounds
+		for (int i = 0; i < HeightmapFiles.Num(); i++)
 		{
 			TArray<FString> NameParts;
-			FPaths::GetBaseFilename(FileName).ParseIntoArray(NameParts, TEXT("_"), true);
+			FPaths::GetBaseFilename(HeightmapFiles[i]).ParseIntoArray(NameParts, TEXT("_"), true);
 
 			Tile NewTile;
 			NewTile.Column = FCString::Atoi(*NameParts[1]);
@@ -199,20 +178,63 @@ void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 			if (NewTile.Row > RowMax)
 				RowMax = NewTile.Row;
 
-			TArray<uint8> FileData;
-			FString FullPath = FPaths::Combine(DirectoryPath, FileName);
-			if (FFileHelper::LoadFileToArray(FileData, *FullPath))
+			// Collect heightmap data
+			TArray<uint8> HeightmapData;
+			FString HeightmapPath = FPaths::Combine(DirectoryPath, HeightmapFiles[i]);
+			if (FFileHelper::LoadFileToArray(HeightmapData, *HeightmapPath))
 			{
-				const int32 DataCount = FileData.Num() / sizeof(uint16);
+				const int32 DataCount = HeightmapData.Num() / sizeof(uint16);
 				NewTile.HeightmapData.AddUninitialized(DataCount);
-				FMemory::Memcpy(NewTile.HeightmapData.GetData(), FileData.GetData(), FileData.Num());
+				FMemory::Memcpy(NewTile.HeightmapData.GetData(), HeightmapData.GetData(), HeightmapData.Num());
+			}
 
-				Tiles1D.Add(NewTile);
-			}
-			else
+			//  Collect alphamap PNG data
+			TArray<uint8> PngData;
+			FString PngPath = FPaths::Combine(DirectoryPath, AlphamapPNGs[i]);
+			// 1. Load the compressed PNG file from disk into a byte array
+			if (FFileHelper::LoadFileToArray(PngData, *PngPath))
 			{
-				UE_LOG(LogTemp, Warning, TEXT("Could not read file: %s"), *FullPath);
+				// 2. Get the ImageWrapper module
+				IImageWrapperModule &ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+				TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+
+				// 3. Decompress the PNG data into a raw byte array in BGRA format (which matches FColor)
+				if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(PngData.GetData(), PngData.Num()))
+				{
+					TArray<uint8> RawData;
+					if (ImageWrapper->GetRaw(ERGBFormat::BGRA, 8, RawData) && RawData.Num() > 0)
+					{
+						NewTile.AlphamapData.AddUninitialized(RawData.Num() / sizeof(FColor));
+						FMemory::Memcpy(NewTile.AlphamapData.GetData(), RawData.GetData(), RawData.Num());
+					}
+				}
 			}
+
+			// Collect alphamap JSON data
+			FString JsonPath = FPaths::Combine(DirectoryPath, AlphamapJSONs[i]);
+			if (FFileHelper::LoadFileToString(JsonString, *JsonPath))
+			{
+				TSharedPtr<FJsonObject> JsonObject;
+				TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
+
+				if (FJsonSerializer::Deserialize(Reader, JsonObject) && JsonObject.IsValid())
+				{
+					TArray<TSharedPtr<FJsonValue>> Layers = JsonObject->GetArrayField(TEXT("layers"));
+					for (const TSharedPtr<FJsonValue> &LayerValue : Layers)
+					{
+						TSharedPtr<FJsonObject> LayerObject = LayerValue->AsObject();
+						FString TextureFile = LayerObject->GetStringField(TEXT("file"));
+						ULandscapeLayerInfoObject *Layer = ImportTexture_CreateLayerInfo(TextureFile, DirectoryPath);
+
+						uint16 LayerIndex = LayerObject->GetNumberField(TEXT("index"));
+						uint16 ChunkIndex = LayerObject->GetNumberField(TEXT("chunkIndex"));
+
+						NewTile.Chunks[ChunkIndex].Layers[LayerIndex] = Layer;
+					}
+				}
+			}
+
+			Tiles1D.Add(NewTile);
 		}
 
 		// Create 2D tile array with proper dimensions
@@ -243,21 +265,36 @@ void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 			Tile *LeftTile = (ArrayColumn > 0) ? Tiles2D[ArrayColumn - 1][ArrayRow] : nullptr;
 			Tile *TopLeftTile = (ArrayRow > 0 && ArrayColumn > 0) ? Tiles2D[ArrayColumn - 1][ArrayRow - 1] : nullptr;
 
-			TArray<uint16> TopTileData;
-			TArray<uint16> LeftTileData;
-			TArray<uint16> TopLeftTileData;
+			TArray<uint16> TopTileHM, LeftTileHM, TopLeftTileHM;
+			TArray<FColor> TopTileAM, LeftTileAM, TopLeftTileAM;
+			TArray<Chunk> TopTileChunks, LeftTileChunks, TopLeftTileChunks;
 
 			if (TopTile)
-				TopTileData = WoWTileHelper::GetRows(TopTile->HeightmapData, 257, (ArrayRow * 2));
+			{
+				TopTileHM = WoWTileHelper::GetRows(TopTile->HeightmapData, 257, (ArrayRow * 2), true);
+				TopTileAM = WoWTileHelper::GetRows(TopTile->AlphamapData, 1024, (ArrayRow * 8), false);
+				TopTileChunks = TopTile->Chunks;
+			}
 
 			if (LeftTile)
-				LeftTileData = WoWTileHelper::GetColumns(LeftTile->HeightmapData, 257, (ArrayColumn * 2));
+			{
+				LeftTileHM = WoWTileHelper::GetColumns(LeftTile->HeightmapData, 257, (ArrayColumn * 2), true);
+				LeftTileAM = WoWTileHelper::GetColumns(LeftTile->AlphamapData, 1024, (ArrayColumn * 8), false);
+				LeftTileChunks = LeftTile->Chunks;
+			}
 
 			if (TopLeftTile)
-				TopLeftTileData = WoWTileHelper::GetCorner(TopLeftTile->HeightmapData, 257, (ArrayColumn * 2), (ArrayRow * 2));
+			{
+				TopLeftTileHM = WoWTileHelper::GetCorner(TopLeftTile->HeightmapData, 257, (ArrayColumn * 2), (ArrayRow * 2), true);
+				TopLeftTileAM = WoWTileHelper::GetCorner(TopLeftTile->AlphamapData, 1024, (ArrayColumn * 8), (ArrayRow * 8), false);
+				TopLeftTileChunks = TopLeftTile->Chunks;
+			}
 
-			TArray<uint16> HeightmapToImport = WoWTileHelper::ExpandTile(CurrentTile.HeightmapData, TopTileData, LeftTileData, TopLeftTileData, 257, (ArrayColumn * 2), (ArrayRow * 2));
-			HeightmapToImport = WoWTileHelper::CropTile(HeightmapToImport, (257 + (ArrayColumn * 2)), 255);
+			TArray<uint16> HeightmapToImport = WoWTileHelper::ExpandTile(CurrentTile.HeightmapData, TopTileHM, LeftTileHM, TopLeftTileHM, 257, (ArrayColumn * 2), (ArrayRow * 2));
+			TArray<FColor> AlphamapToImport = WoWTileHelper::ExpandTile(CurrentTile.AlphamapData, TopTileAM, LeftTileAM, TopLeftTileAM, 1024, (ArrayColumn * 8), (ArrayRow * 8));
+
+			HeightmapToImport = WoWTileHelper::CropTile(HeightmapToImport, (257 + (ArrayColumn * 2)), 0, 0, 255, 255);
+			AlphamapToImport = WoWTileHelper::CropTile(AlphamapToImport, (1024 + (ArrayColumn * 8)), 0, 0, 1020, 1020);
 
 			// Spawn the Landscape actor
 			ALandscape *Landscape = GEditor->GetEditorWorldContext().World()->SpawnActor<ALandscape>();
@@ -270,6 +307,8 @@ void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 			// Prepare data for the Import function
 			TMap<FGuid, TArray<uint16>> HeightDataPerLayer;
 			HeightDataPerLayer.Add(FGuid(), MoveTemp(HeightmapToImport));
+
+			// Is this what we use to paint the landscape with?
 			TMap<FGuid, TArray<FLandscapeImportLayerInfo>> MaterialLayerDataPerLayer;
 			MaterialLayerDataPerLayer.Add(FGuid(), TArray<FLandscapeImportLayerInfo>());
 
@@ -280,10 +319,114 @@ void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 			ULandscapeInfo *LandscapeInfo = Landscape->GetLandscapeInfo();
 			LandscapeInfo->UpdateLayerInfoMap(Landscape);
 			Landscape->RegisterAllComponents();
+
+			// // TODO: Paint the imported landscape with alphamap data and layer textures from each chunk.
+			// TArray<Chunk> AlphamapChunks = WoWTileHelper::ExtractTileChunks(CurrentTile.Chunks, TopTileChunks, LeftTileChunks, TopLeftTileChunks, (ArrayColumn * 8), (ArrayRow * 8));
+
+			// // Determine the grid of the current AlphamapChunks array
+			// const uint8 IncludeChunkX = (ArrayColumn % 8 == 0) ? 0 : 1;
+			// const uint8 ChunkGridX = 16 + IncludeChunkX;
+			// const uint8 IncludeChunkY = (ArrayRow % 8 == 0) ? 0 : 1;
+			// const uint8 ChunkGridY = 16 + IncludeChunkY;
+
+			// for (uint16 Row = 0; Row < ChunkGridY; Row++)
+			// {
+			// 	for (uint16 Col = 0; Col < ChunkGridX; Col++)
+			// 	{
+			// 		TArray<FColor> AlphamapChunkData;
+			// 		uint16 CropStartX = 0, CropStartY = 0, CropEndX = 0, CropEndY = 0;
+
+			// 		// Extract the part of the alphamap that correspond to the current chunk in the AlphamapChunks array
+			// 		if ((Row == 0 && Col == 0) && (ChunkGridX == 17 && ChunkGridY == 17))
+			// 		{
+			// 			CropEndX = FMath::Min((ArrayColumn * 8), 1016);
+			// 			CropEndY = FMath::Min((ArrayRow * 8), 1016);
+
+			// 			AlphamapChunkData = WoWTileHelper::CropTile(AlphamapToImport, 1016, 0, 0, CropEndX, CropEndY);
+			// 		}
+			// 		else if (Row == 0 && ChunkGridY == 17)
+			// 		{
+			// 			CropStartX = (ArrayColumn * 8) + ((Col - IncludeChunkX) * 64);
+			// 			CropEndX = FMath::Min((CropStartX + 64), 1016);
+			// 			CropEndY = FMath::Min((ArrayRow * 8), 1016);
+
+			// 			AlphamapChunkData = WoWTileHelper::CropTile(AlphamapToImport, 1016, CropStartX, 0, CropEndX, CropEndY);
+			// 		}
+			// 		else if (Col == 0 && ChunkGridX == 17)
+			// 		{
+			// 			CropStartY = (ArrayRow * 8) + ((Row - IncludeChunkY) * 64);
+			// 			CropEndX = FMath::Min((ArrayColumn * 8), 1016);
+			// 			CropEndY = FMath::Min((CropStartY + 64), 1016);
+
+			// 			AlphamapChunkData = WoWTileHelper::CropTile(AlphamapToImport, 1016, 0, CropStartY, CropEndX, CropEndY);
+			// 		}
+			// 		else
+			// 		{
+			// 			CropStartX = (ArrayColumn * 8) + ((Col - IncludeChunkX) * 64);
+			// 			CropStartY = (ArrayRow * 8) + ((Row - IncludeChunkY) * 64);
+			// 			CropEndX = FMath::Min((CropStartX + 64), 1016);
+			// 			CropEndY = FMath::Min((CropStartY + 64), 1016);
+
+			// 			AlphamapChunkData = WoWTileHelper::CropTile(AlphamapToImport, 1016, CropStartX, CropStartY, CropEndX, CropEndY);
+			// 		}
+
+			// 		// Extract the layers from the current chunk in the AlphamapChunks array
+			// 		TArray<UTexture2D *> LayerTextures = AlphamapChunks[Row * ChunkGridX + Col].Layers;
+
+			// 		// Paint the landscape with the extracted alphamap chunk data and layer textures
+			// 	}
+			// }
 		}
-		FString Message = FString::Printf(TEXT("Imported %d landscape file(s)"), LandscapeFiles.Num());
+		FString Message = FString::Printf(TEXT("Imported %d heightmap file(s)"), HeightmapFiles.Num());
 		UpdateStatusMessage(Message, false);
 	}
+}
+
+ULandscapeLayerInfoObject *FWoWLandscapeImporterModule::ImportTexture_CreateLayerInfo(const FString &RelativeTexturePath, const FString &BaseDirectoryPath)
+{
+	FString CleanPath = RelativeTexturePath.Replace(TEXT("..\\..\\"), TEXT("")).Replace(TEXT("\\"), TEXT("/"));
+
+	FString TextureDirectory = FPaths::GetPath(CleanPath);
+	FString TextureFileName = FPaths::GetBaseFilename(CleanPath);
+	FString PackagePath = TextureDirectory.IsEmpty() ? FString::Printf(TEXT("/Game/Assets/%s"), *TextureFileName) : FString::Printf(TEXT("/Game/Assets/%s/%s"), *TextureDirectory, *TextureFileName);
+
+	// Return existing layer info if it already exists
+	if (UObject *ExistingAsset = UEditorAssetLibrary::LoadAsset(PackagePath))
+		return Cast<ULandscapeLayerInfoObject>(ExistingAsset);
+
+	FString FullTexturePath = FPaths::ConvertRelativePathToFull(FPaths::Combine(BaseDirectoryPath, RelativeTexturePath));
+
+	FString AssetDirectory = TextureDirectory.IsEmpty() ? TEXT("/Game/Assets") : FString::Printf(TEXT("/Game/Assets/%s"), *TextureDirectory);
+	if (!UEditorAssetLibrary::DoesDirectoryExist(AssetDirectory))
+		UEditorAssetLibrary::MakeDirectory(AssetDirectory);
+
+	// Import the texture
+	IAssetTools &AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+	TArray<UObject *> ImportedAssets = AssetTools.ImportAssets({FullTexturePath}, AssetDirectory);
+
+	if (ImportedAssets.Num() > 0)
+	{
+		// Create the layer info object
+		FString LayerInfoName = FString::Printf(TEXT("LI_%s"), *TextureFileName);
+		FString LayerInfoPackagePath = FString::Printf(TEXT("%s/%s"), *AssetDirectory, *LayerInfoName);
+
+		UPackage *LayerInfoPackage = CreatePackage(*LayerInfoPackagePath);
+		ULandscapeLayerInfoObject *LayerInfo = NewObject<ULandscapeLayerInfoObject>(LayerInfoPackage, *LayerInfoName, RF_Public | RF_Standalone);
+
+		// TODO: Where do we set the texture for the layer info?
+		LayerInfo->LayerName = FName(*TextureFileName);
+		LayerInfo->PhysMaterial = nullptr; // Set default physical material if needed
+		LayerInfo->LayerUsageDebugColor = FLinearColor::White;
+
+		// Notify the asset registry
+		FAssetRegistryModule &AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		AssetRegistryModule.Get().AssetCreated(LayerInfo);
+		LayerInfo->MarkPackageDirty();
+
+		return LayerInfo;
+	}
+
+	return nullptr;
 }
 
 void FWoWLandscapeImporterModule::UpdateStatusMessage(const FString &Message, bool bIsError)

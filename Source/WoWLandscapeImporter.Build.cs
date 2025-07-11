@@ -45,7 +45,12 @@ public class WoWLandscapeImporter : ModuleRules
 				"SlateCore",
 				"Json",
 				"Landscape",
-				// ... add private dependencies that you statically link with here ...	
+				"EditorScriptingUtilities",
+				"Foliage",
+				"LandscapeEditor",
+				"LandscapeEditorUtilities",
+				"AssetRegistry",
+				"AssetTools",
 			}
 			);
 		
