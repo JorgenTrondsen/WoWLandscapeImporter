@@ -51,6 +51,7 @@ public class WoWLandscapeImporter : ModuleRules
 				"LandscapeEditorUtilities",
 				"AssetRegistry",
 				"AssetTools",
+				"MaterialEditor",
 			}
 			);
 		

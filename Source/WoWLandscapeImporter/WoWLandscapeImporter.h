@@ -13,18 +13,12 @@ class ULandscapeLayerInfoObject;
 /** Struct to hold layer data within a chunk*/
 struct Chunk
 {
-	TArray<TObjectPtr<ULandscapeLayerInfoObject>> Layers;
-
-	Chunk()
-	{
-		Layers.SetNum(4);
-	}
+	TArray<FName> Layers;
 };
 
 /** Struct to represent a tile in the landscape grid */
 struct Tile
 {
-	TArray<uint16> HeightmapData;
 	TArray<FColor> AlphamapData;
 	TArray<Chunk> Chunks;
 
@@ -34,6 +28,13 @@ struct Tile
 	{
 		Chunks.SetNum(256);
 	}
+};
+
+struct LayerStruct
+{
+	TArray<uint8> LayerData;
+	TObjectPtr<ULandscapeLayerInfoObject> LayerInfo;
+	TObjectPtr<UTexture2D> LayerTexture;
 };
 
 class FWoWLandscapeImporterModule : public IModuleInterface
@@ -52,9 +53,6 @@ public:
 	/** Function to import landscape */
 	void ImportLandscape(const FString &DirectoryPath);
 
-	/** Function to import texture and create layer info*/
-	ULandscapeLayerInfoObject *ImportTexture_CreateLayerInfo(const FString &RelativeTexturePath, const FString &BaseDirectoryPath);
-
 private:
 	void RegisterMenus();
 
@@ -63,9 +61,18 @@ private:
 	/** Update the status message in the UI */
 	void UpdateStatusMessage(const FString &Message, bool bIsError = false);
 
-private:
+	/** Function to import texture and create layer info*/
+	FName ImportTexture_CreateLayerInfo(const FString &RelativeTexturePath, const FString &BaseDirectoryPath);
+
+	TArray<uint16> CropLandscape(const TArray<uint16> &Heightmap, const uint16 HeightmapWidth, const uint16 CropWidth, const uint16 CropHeight);
+
+	UMaterial *CreateLandscapeMaterial(const FString &BaseDirectoryPath);
+
 	TSharedPtr<class FUICommandList> PluginCommands;
 
 	/** Status message widget reference */
 	TSharedPtr<class STextBlock> StatusMessageWidget;
+
+	/** Key-value store for data arrays of landscape layers */
+	TMap<FString, LayerStruct> LayerStructMap;
 };
