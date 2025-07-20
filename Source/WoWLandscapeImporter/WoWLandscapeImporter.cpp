@@ -16,6 +16,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonReader.h"
 #include "Landscape.h"
+#include "LandscapeStreamingProxy.h"
 #include "LandscapeInfo.h"
 #include "ImageUtils.h"
 #include "IImageWrapperModule.h"
@@ -117,28 +118,27 @@ FReply FWoWLandscapeImporterModule::OnImportButtonClicked()
 
 void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 {
-	TArray<FString> HeightmapFile;
+	TArray<FString> HeightmapFiles;
 	TArray<FString> AlphamapPNGs;
 	TArray<FString> AlphamapJSONs;
 
 	// Find all required files in the directory
 	FString SearchPattern = FPaths::Combine(DirectoryPath, TEXT("*.r16"));
-	IFileManager::Get().FindFiles(HeightmapFile, *SearchPattern, true, false);
+	IFileManager::Get().FindFiles(HeightmapFiles, *SearchPattern, true, false);
 	SearchPattern = FPaths::Combine(DirectoryPath, TEXT("tex_*.png"));
 	IFileManager::Get().FindFiles(AlphamapPNGs, *SearchPattern, true, false);
 	SearchPattern = FPaths::Combine(DirectoryPath, TEXT("tex_*.json"));
 	IFileManager::Get().FindFiles(AlphamapJSONs, *SearchPattern, true, false);
 
 	// Check if we found all required files
-	if (HeightmapFile.IsEmpty() || AlphamapPNGs.IsEmpty() || AlphamapJSONs.IsEmpty())
+	if (HeightmapFiles.IsEmpty() || AlphamapPNGs.IsEmpty() || AlphamapJSONs.IsEmpty())
 	{
 		UpdateStatusMessage(TEXT("Missing either: R16 files, Alphamap PNGs, Alphamap JSONs"), true);
 	}
 	else
 	{
-		double_t Zscale = 0.0;
-		uint16_t VerticesX = 0;
-		uint16_t VerticesY = 0;
+		double Zscale = 0.0;
+		uint8 ColumnOrigin = 0, RowOrigin = 0, TileColumns = 0, TileRows = 0;
 
 		// Read heightmap metadata JSON and extract heightmap range and resolution
 		FString MetadataPath = FPaths::Combine(DirectoryPath, TEXT("heightmap_metadata.json"));
@@ -155,41 +155,34 @@ void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 				Zscale = Range * 91.44;			 // RangeValue is in yards, convert to centimeters (1 yard = 91.44 cm)
 				Zscale = (Zscale / 51200) * 100; // Convert to percentage scale
 
-				TSharedPtr<FJsonObject> TotalVerticesObject = JsonObject->GetObjectField(TEXT("total_vertices"));
-				VerticesX = TotalVerticesObject->GetNumberField(TEXT("x"));
-				VerticesY = TotalVerticesObject->GetNumberField(TEXT("y"));
+				TSharedPtr<FJsonObject> TotalVerticesObject = JsonObject->GetObjectField(TEXT("tile_range"));
+				ColumnOrigin = TotalVerticesObject->GetNumberField(TEXT("column_min"));
+				RowOrigin = TotalVerticesObject->GetNumberField(TEXT("row_min"));
+				TileColumns = TotalVerticesObject->GetNumberField(TEXT("column_count"));
+				TileRows = TotalVerticesObject->GetNumberField(TEXT("row_count"));
 			}
 		}
 
-		TArray<uint16> HeightmapToImport;
-		TArray<Tile> Tiles;
-		uint8 ColumnOrigin = 255;
-		uint8 RowOrigin = 255;
+		TileGrid.SetNum(TileRows);
+		for (uint8 Row = 0; Row < TileRows; Row++)
+			TileGrid[Row].SetNum(TileColumns);
 
-		// Collect heightmap data
-		TArray<uint8> HeightmapData;
-		FString HeightmapPath = FPaths::Combine(DirectoryPath, HeightmapFile[0]);
-		if (FFileHelper::LoadFileToArray(HeightmapData, *HeightmapPath))
-		{
-			const int32 DataCount = HeightmapData.Num() / sizeof(uint16);
-			HeightmapToImport.AddUninitialized(DataCount);
-			FMemory::Memcpy(HeightmapToImport.GetData(), HeightmapData.GetData(), HeightmapData.Num());
-		}
-
-		// Collect alphamap PNG and JSON data
-		for (int i = 0; i < AlphamapPNGs.Num(); i++)
+		// First pass: collect filedata, metadata and find bounds
+		for (int i = 0; i < HeightmapFiles.Num(); i++)
 		{
 			TArray<FString> NameParts;
-			FPaths::GetBaseFilename(AlphamapPNGs[i]).ParseIntoArray(NameParts, TEXT("_"), true);
-
+			FPaths::GetBaseFilename(HeightmapFiles[i]).ParseIntoArray(NameParts, TEXT("_"), true);
 			Tile NewTile;
-			NewTile.Column = FCString::Atoi(*NameParts[1]);
-			NewTile.Row = FCString::Atoi(*NameParts[2]);
 
-			if (NewTile.Column < ColumnOrigin)
-				ColumnOrigin = NewTile.Column;
-			if (NewTile.Row < RowOrigin)
-				RowOrigin = NewTile.Row;
+			// Collect heightmap data
+			TArray<uint8> HeightmapData;
+			FString HeightmapPath = FPaths::Combine(DirectoryPath, HeightmapFiles[i]);
+			if (FFileHelper::LoadFileToArray(HeightmapData, *HeightmapPath))
+			{
+				const int32 DataCount = HeightmapData.Num() / sizeof(uint16);
+				NewTile.HeightmapData.AddUninitialized(DataCount);
+				FMemory::Memcpy(NewTile.HeightmapData.GetData(), HeightmapData.GetData(), HeightmapData.Num());
+			}
 
 			//  Collect alphamap PNG data
 			TArray<uint8> PngData;
@@ -232,102 +225,61 @@ void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 				}
 			}
 
-			Tiles.Add(NewTile);
+			TileGrid[FCString::Atoi(*NameParts[2]) - RowOrigin][FCString::Atoi(*NameParts[1]) - ColumnOrigin] = NewTile;
 		}
 
-		// Adjust the landscape size to fit UE5 landscape import parameters(127x2 = 254x254 quads per component)
-		uint16 CropWidth = VerticesX - (VerticesX % 254) + 1;
-		uint16 CropHeight = VerticesY - (VerticesY % 254) + 1;
-		HeightmapToImport = CropLandscape(HeightmapToImport, VerticesX, CropWidth, CropHeight);
+		// Use a Scoped Slow Task to provide feedback to the user and prevent the editor from freezing.
+		FScopedSlowTask SlowTask(TileRows * TileColumns, LOCTEXT("ImportingWoWLandscape", "Importing WoW Landscape..."));
+		SlowTask.MakeDialog();
 
-		// Fill the layers data array with weights from the alphamap
-		for (const Tile &Tile : Tiles)
-		{
-			uint32 TileOffsetX = (Tile.Column - ColumnOrigin) * 256;
-			uint32 TileOffsetY = (Tile.Row - RowOrigin) * 256;
-
-			// Iterate over the alphamap data
-			for (uint16 Row = 0; Row < 256; ++Row)
-			{
-				for (uint16 Col = 0; Col < 256; ++Col)
-				{
-					uint32 GlobalIndexX = (Col + TileOffsetX);
-					uint32 GlobalIndexY = (Row + TileOffsetY) * CropWidth;
-					uint32 GlobalIndex = GlobalIndexY + GlobalIndexX;
-
-					if (GlobalIndexX >= CropWidth || GlobalIndexY >= (uint32)(CropWidth * CropHeight))
-						continue; // Skip if out of bounds
-
-					uint16 AlphamapIndex = (Row * 256) + Col;
-					uint8 ChunkIndex = (Row / 16) * 16 + (Col / 16);
-
-					FColor PixelData = Tile.AlphamapData[AlphamapIndex];
-
-					// Calculate the weight for each layer based on the pixel data
-					for (uint16 LayerIndex = 0; LayerIndex < Tile.Chunks[ChunkIndex].Layers.Num(); ++LayerIndex)
-					{
-						LayerStruct *LayerStruct = LayerStructMap.Find(Tile.Chunks[ChunkIndex].Layers[LayerIndex].ToString());
-
-						if (LayerStruct && LayerStruct->LayerData.Num() == 0)
-							LayerStruct->LayerData.Init(0, CropWidth * CropHeight);
-
-						switch (LayerIndex)
-						{
-						case 0:
-							LayerStruct->LayerData[GlobalIndex] = PixelData.A - PixelData.R - PixelData.G - PixelData.B;
-							break;
-
-						case 1:
-							LayerStruct->LayerData[GlobalIndex] = PixelData.R;
-							break;
-
-						case 2:
-							LayerStruct->LayerData[GlobalIndex] = PixelData.G;
-							break;
-
-						case 3:
-							LayerStruct->LayerData[GlobalIndex] = PixelData.B;
-							break;
-						}
-					}
-				}
-			}
-		}
-
-		// Spawn the Landscape actor
+		// Create the main landscape actor first
 		ALandscape *Landscape = GEditor->GetEditorWorldContext().World()->SpawnActor<ALandscape>();
 		Landscape->SetActorLabel(*FPaths::GetCleanFilename(DirectoryPath));
 		Landscape->SetActorScale3D(FVector(190.5f, 190.5f, Zscale)); // There is 190.5 centimeters between each vertex in the heightmap
 
-		// Prepare data for the Import function
-		TMap<FGuid, TArray<uint16>> HeightDataPerLayer;
-		HeightDataPerLayer.Add(FGuid(), MoveTemp(HeightmapToImport));
+		// Initialize the landscape with a valid GUID and landscape parameters
+		FGuid LandscapeGuid = FGuid::NewGuid();
+		Landscape->SetLandscapeGuid(LandscapeGuid);
 
-		// Prepare material layer data
-		TMap<FGuid, TArray<FLandscapeImportLayerInfo>> MaterialLayerDataPerLayer;
-		TArray<FLandscapeImportLayerInfo> FinalLayerInfos;
-		for (auto &LayerStruct : LayerStructMap)
+		// Set landscape configuration parameters to match what we'll import
+		Landscape->ComponentSizeQuads = 254;
+		Landscape->SubsectionSizeQuads = 127;
+		Landscape->NumSubsections = 2;
+
+		uint8 CompPerProxy = 2;
+		for (int TileRow = 0; TileRow < TileRows; TileRow += CompPerProxy)
 		{
-			FLandscapeImportLayerInfo ImportLayerInfo;
-			ImportLayerInfo.LayerName = LayerStruct.Value.LayerInfo->LayerName;
-			ImportLayerInfo.LayerInfo = LayerStruct.Value.LayerInfo;
-			ImportLayerInfo.LayerData = MoveTemp(LayerStruct.Value.LayerData);
-			FinalLayerInfos.Add(ImportLayerInfo);
+			for (int TileCol = 0; TileCol < TileColumns; TileCol += CompPerProxy)
+			{
+				// Update the slow task dialog
+				SlowTask.EnterProgressFrame(CompPerProxy * CompPerProxy, FText::Format(LOCTEXT("ImportingProxy", "Importing Proxy at (Column {0}), (Row {1})"), TileCol, TileRow));
+
+				TArray<uint16> ProxyHeightmap = CreateProxyHeightmap(TileRow, TileCol, CompPerProxy);
+
+				// Create a LandscapeStreamingProxy for the heightmap data
+				ALandscapeStreamingProxy *StreamingProxy = GEditor->GetEditorWorldContext().World()->SpawnActor<ALandscapeStreamingProxy>();
+				StreamingProxy->SetActorLabel(FString::Printf(TEXT("%d_%d_Proxy"), TileCol, TileRow));
+				StreamingProxy->SetActorScale3D(Landscape->GetActorScale3D());
+
+				// Set the landscape guid for the proxy
+				StreamingProxy->SetLandscapeGuid(LandscapeGuid);
+
+				// Prepare data for the Import function on the streaming proxy
+				TMap<FGuid, TArray<uint16>> HeightDataPerLayer;
+				HeightDataPerLayer.Add(FGuid(), MoveTemp(ProxyHeightmap));
+
+				// Prepare material layer data
+				TMap<FGuid, TArray<FLandscapeImportLayerInfo>> MaterialLayerDataPerLayer;
+				MaterialLayerDataPerLayer.Add(FGuid(), TArray<FLandscapeImportLayerInfo>());
+
+				// Import the heightmap data into the streaming proxy using the same GUID
+				uint32 MinX = TileCol * 254;
+				uint32 MinY = TileRow * 254;
+				uint32 MaxX = MinX + (254 * CompPerProxy);
+				uint32 MaxY = MinY + (254 * CompPerProxy);
+				StreamingProxy->Import(LandscapeGuid, MinX, MinY, MaxX, MaxY, 2, 127, HeightDataPerLayer, nullptr, MaterialLayerDataPerLayer, ELandscapeImportAlphamapType::Additive); // For every proxy added, then this function uses more time and the memory usage increases.
+			}
 		}
-		// Add the final layer infos to the material layer data map
-		MaterialLayerDataPerLayer.Add(FGuid(), MoveTemp(FinalLayerInfos));
-
-		// Import the heightmap data into the landscape
-		Landscape->Import(FGuid::NewGuid(), 0, 0, (CropWidth - 1), (CropHeight - 1), 2, 127, HeightDataPerLayer, nullptr, MaterialLayerDataPerLayer, ELandscapeImportAlphamapType::Additive);
-
-		// Create and assign the landscape material
-		UMaterial *LandscapeMaterial = CreateLandscapeMaterial(DirectoryPath);
-		Landscape->LandscapeMaterial = LandscapeMaterial;
-
-		// Finalize the landscape actor
-		ULandscapeInfo *LandscapeInfo = Landscape->GetLandscapeInfo();
-		LandscapeInfo->UpdateLayerInfoMap(Landscape);
-		Landscape->RegisterAllComponents();
 	}
 }
 
@@ -376,18 +328,53 @@ FName FWoWLandscapeImporterModule::ImportTexture_CreateLayerInfo(const FString &
 	return NAME_None;
 }
 
-TArray<uint16> FWoWLandscapeImporterModule::CropLandscape(const TArray<uint16> &Heightmap, const uint16 HeightmapWidth, const uint16 CropWidth, const uint16 CropHeight)
+TArray<uint16> FWoWLandscapeImporterModule::CreateProxyHeightmap(const int TileRow, const int TileCol, const uint8 CompPerProxy)
 {
-	TArray<uint16> OutData;
-	OutData.SetNumUninitialized(CropWidth * CropHeight);
+	const uint16 HeightmapWidth = 254 * CompPerProxy + 1;
+	const uint16 HeightmapHeight = 254 * CompPerProxy + 1;
 
-	for (uint16 y = 0; y < CropHeight; ++y)
+	const uint8 ShiftedCols = ((256 * CompPerProxy + 1) - HeightmapWidth) * (TileCol / CompPerProxy);
+	const uint8 ShiftedRows = ((256 * CompPerProxy + 1) - HeightmapHeight) * (TileRow / CompPerProxy);
+
+	TArray<uint16> ProxyHeightmap;
+	ProxyHeightmap.SetNumZeroed(HeightmapWidth * HeightmapHeight);
+
+	int8 GridOffsetRow = TileRow > 0 ? -1 : 0;
+	uint32 TileIndexRow = GridOffsetRow < 0 ? 256 - ShiftedRows : 0;
+	for (int ProxyRow = 0; ProxyRow < HeightmapHeight; ProxyRow++)
 	{
-		// Copy the row of data from the heightmap to the cropped array
-		FMemory::Memcpy(&OutData[y * CropWidth], &Heightmap[y * HeightmapWidth], CropWidth * sizeof(uint16));
+		if (TileIndexRow % 256 == 0 && TileIndexRow != 0)
+		{
+			TileIndexRow = 0;
+			GridOffsetRow++;
+		}
+		uint8 TileGridRow = TileRow + GridOffsetRow;
+
+		int8 GridOffsetCol = TileCol > 0 ? -1 : 0;
+		uint32 TileIndexCol = GridOffsetCol < 0 ? 256 - ShiftedCols : 0;
+		for (int ProxyCol = 0; ProxyCol < HeightmapWidth; ProxyCol++)
+		{
+			if (TileIndexCol % 256 == 0 && TileIndexCol != 0)
+			{
+				TileIndexCol = 0;
+				GridOffsetCol++;
+			}
+			uint8 TileGridCol = TileCol + GridOffsetCol;
+
+			uint32 TileIndex = (TileIndexRow * 257) + TileIndexCol;
+			uint32 ProxyIndex = (ProxyRow * HeightmapWidth) + ProxyCol;
+
+			if (!TileGrid[TileGridRow].IsValidIndex(TileGridCol) || TileGrid[TileGridRow][TileGridCol].HeightmapData.IsEmpty())
+				ProxyHeightmap[ProxyIndex] = 0; // If no heightmap data is found, set to 0
+			else
+				ProxyHeightmap[ProxyIndex] = TileGrid[TileGridRow][TileGridCol].HeightmapData[TileIndex];
+
+			TileIndexCol++;
+		}
+		TileIndexRow++;
 	}
 
-	return OutData;
+	return ProxyHeightmap;
 }
 
 UMaterial *FWoWLandscapeImporterModule::CreateLandscapeMaterial(const FString &BaseDirectoryPath)

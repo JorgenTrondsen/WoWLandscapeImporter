@@ -19,10 +19,9 @@ struct Chunk
 /** Struct to represent a tile in the landscape grid */
 struct Tile
 {
+	TArray<uint16> HeightmapData;
 	TArray<FColor> AlphamapData;
 	TArray<Chunk> Chunks;
-
-	uint8 Column, Row;
 
 	Tile()
 	{
@@ -64,7 +63,7 @@ private:
 	/** Function to import texture and create layer info*/
 	FName ImportTexture_CreateLayerInfo(const FString &RelativeTexturePath, const FString &BaseDirectoryPath);
 
-	TArray<uint16> CropLandscape(const TArray<uint16> &Heightmap, const uint16 HeightmapWidth, const uint16 CropWidth, const uint16 CropHeight);
+	TArray<uint16> CreateProxyHeightmap(const int TileRow, const int TileCol, const uint8 CompPerProxy);
 
 	UMaterial *CreateLandscapeMaterial(const FString &BaseDirectoryPath);
 
@@ -72,6 +71,8 @@ private:
 
 	/** Status message widget reference */
 	TSharedPtr<class STextBlock> StatusMessageWidget;
+
+	TArray<TArray<Tile>> TileGrid;
 
 	/** Key-value store for data arrays of landscape layers */
 	TMap<FString, LayerStruct> LayerStructMap;
