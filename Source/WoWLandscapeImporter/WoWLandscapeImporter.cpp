@@ -17,6 +17,7 @@
 #include "Serialization/JsonReader.h"
 #include "Landscape.h"
 #include "LandscapeStreamingProxy.h"
+#include "LandscapeProxy.h"
 #include "LandscapeInfo.h"
 #include "ImageUtils.h"
 #include "IImageWrapperModule.h"
@@ -30,6 +31,7 @@
 #include "Materials/MaterialExpressionLandscapeLayerBlend.h"
 #include "Materials/MaterialExpressionTextureSample.h"
 #include "Factories/MaterialFactoryNew.h"
+#include "Materials/MaterialExpressionConstant.h"
 #include "MaterialDomain.h"
 #include "Materials/MaterialExpressionLandscapeLayerCoords.h" // Required for landscape UVs
 #include "MaterialEditorUtilities.h"
@@ -236,6 +238,7 @@ void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 		ALandscape *Landscape = GEditor->GetEditorWorldContext().World()->SpawnActor<ALandscape>();
 		Landscape->SetActorLabel(*FPaths::GetCleanFilename(DirectoryPath));
 		Landscape->SetActorScale3D(FVector(190.5f, 190.5f, Zscale)); // There is 190.5 centimeters between each vertex in the heightmap
+		Landscape->SetActorLocation(FVector(0, 0, 100000));
 
 		// Initialize the landscape with a valid GUID and landscape parameters
 		FGuid LandscapeGuid = FGuid::NewGuid();
@@ -246,38 +249,44 @@ void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 		Landscape->SubsectionSizeQuads = 127;
 		Landscape->NumSubsections = 2;
 
-		uint8 CompPerProxy = 2;
+		// Create and assign the landscape material
+		UMaterial *LandscapeMaterial = CreateLandscapeMaterial(DirectoryPath);
+		Landscape->LandscapeMaterial = LandscapeMaterial;
+
+		ULandscapeInfo *LandscapeInfo = Landscape->CreateLandscapeInfo();
+
+		uint8 CompPerProxy = 1;
 		for (int TileRow = 0; TileRow < TileRows; TileRow += CompPerProxy)
 		{
 			for (int TileCol = 0; TileCol < TileColumns; TileCol += CompPerProxy)
 			{
 				// Update the slow task dialog
-				SlowTask.EnterProgressFrame(CompPerProxy * CompPerProxy, FText::Format(LOCTEXT("ImportingProxy", "Importing Proxy at (Column {0}), (Row {1})"), TileCol, TileRow));
+				SlowTask.EnterProgressFrame(CompPerProxy * CompPerProxy, FText::Format(LOCTEXT("ImportingProxy", "Importing Proxy at (Row {1}), (Column {0})"), TileRow, TileCol));
 
-				TArray<uint16> ProxyHeightmap = CreateProxyHeightmap(TileRow, TileCol, CompPerProxy);
+				TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> ProxyData = this->CreateProxyData(TileRow, TileCol, CompPerProxy);
 
-				// Create a LandscapeStreamingProxy for the heightmap data
+				// Create a LandscapeStreamingProxy actor for the current tiles
 				ALandscapeStreamingProxy *StreamingProxy = GEditor->GetEditorWorldContext().World()->SpawnActor<ALandscapeStreamingProxy>();
 				StreamingProxy->SetActorLabel(FString::Printf(TEXT("%d_%d_Proxy"), TileCol, TileRow));
 				StreamingProxy->SetActorScale3D(Landscape->GetActorScale3D());
-
-				// Set the landscape guid for the proxy
-				StreamingProxy->SetLandscapeGuid(LandscapeGuid);
+				StreamingProxy->SetActorLocation(Landscape->GetActorLocation());
 
 				// Prepare data for the Import function on the streaming proxy
 				TMap<FGuid, TArray<uint16>> HeightDataPerLayer;
-				HeightDataPerLayer.Add(FGuid(), MoveTemp(ProxyHeightmap));
+				HeightDataPerLayer.Add(FGuid(), MoveTemp(ProxyData.Get<0>()));
 
 				// Prepare material layer data
 				TMap<FGuid, TArray<FLandscapeImportLayerInfo>> MaterialLayerDataPerLayer;
-				MaterialLayerDataPerLayer.Add(FGuid(), TArray<FLandscapeImportLayerInfo>());
+				MaterialLayerDataPerLayer.Add(FGuid(), MoveTemp(ProxyData.Get<1>()));
 
-				// Import the heightmap data into the streaming proxy using the same GUID
 				uint32 MinX = TileCol * 254;
 				uint32 MinY = TileRow * 254;
 				uint32 MaxX = MinX + (254 * CompPerProxy);
 				uint32 MaxY = MinY + (254 * CompPerProxy);
-				StreamingProxy->Import(LandscapeGuid, MinX, MinY, MaxX, MaxY, 2, 127, HeightDataPerLayer, nullptr, MaterialLayerDataPerLayer, ELandscapeImportAlphamapType::Additive); // For every proxy added, then this function uses more time and the memory usage increases.
+				StreamingProxy->Import(FGuid::NewGuid(), MinX, MinY, MaxX, MaxY, 2, 127, HeightDataPerLayer, nullptr, MaterialLayerDataPerLayer, ELandscapeImportAlphamapType::Additive);
+
+				StreamingProxy->SetLandscapeGuid(LandscapeGuid);
+				LandscapeInfo->RegisterActor(StreamingProxy);
 			}
 		}
 	}
@@ -320,7 +329,7 @@ FName FWoWLandscapeImporterModule::ImportTexture_CreateLayerInfo(const FString &
 		AssetRegistryModule.Get().AssetCreated(LayerInfo);
 		LayerInfo->MarkPackageDirty();
 
-		LayerStructMap.Add(TextureFileName, {TArray<uint8>(), LayerInfo, Cast<UTexture2D>(ImportedAssets[0])});
+		LayerMetadataMap.Add(LayerInfo->LayerName, {LayerInfo, Cast<UTexture2D>(ImportedAssets[0])});
 
 		return LayerInfo->LayerName;
 	}
@@ -328,20 +337,21 @@ FName FWoWLandscapeImporterModule::ImportTexture_CreateLayerInfo(const FString &
 	return NAME_None;
 }
 
-TArray<uint16> FWoWLandscapeImporterModule::CreateProxyHeightmap(const int TileRow, const int TileCol, const uint8 CompPerProxy)
+TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterModule::CreateProxyData(const int TileRow, const int TileCol, const uint8 CompPerProxy)
 {
-	const uint16 HeightmapWidth = 254 * CompPerProxy + 1;
-	const uint16 HeightmapHeight = 254 * CompPerProxy + 1;
+	const uint16 MapWidth = 254 * CompPerProxy + 1;
+	const uint16 MapHeight = 254 * CompPerProxy + 1;
 
-	const uint8 ShiftedCols = ((256 * CompPerProxy + 1) - HeightmapWidth) * (TileCol / CompPerProxy);
-	const uint8 ShiftedRows = ((256 * CompPerProxy + 1) - HeightmapHeight) * (TileRow / CompPerProxy);
+	const uint8 ShiftedCols = ((256 * CompPerProxy + 1) - MapWidth) * (TileCol / CompPerProxy);
+	const uint8 ShiftedRows = ((256 * CompPerProxy + 1) - MapHeight) * (TileRow / CompPerProxy);
 
 	TArray<uint16> ProxyHeightmap;
-	ProxyHeightmap.SetNumZeroed(HeightmapWidth * HeightmapHeight);
+	ProxyHeightmap.SetNumZeroed(MapWidth * MapHeight);
+	TMap<FName, FLandscapeImportLayerInfo> LayerInfoMap;
 
 	int8 GridOffsetRow = TileRow > 0 ? -1 : 0;
 	uint32 TileIndexRow = GridOffsetRow < 0 ? 256 - ShiftedRows : 0;
-	for (int ProxyRow = 0; ProxyRow < HeightmapHeight; ProxyRow++)
+	for (int ProxyRow = 0; ProxyRow < MapHeight; ProxyRow++)
 	{
 		if (TileIndexRow % 256 == 0 && TileIndexRow != 0)
 		{
@@ -352,7 +362,7 @@ TArray<uint16> FWoWLandscapeImporterModule::CreateProxyHeightmap(const int TileR
 
 		int8 GridOffsetCol = TileCol > 0 ? -1 : 0;
 		uint32 TileIndexCol = GridOffsetCol < 0 ? 256 - ShiftedCols : 0;
-		for (int ProxyCol = 0; ProxyCol < HeightmapWidth; ProxyCol++)
+		for (int ProxyCol = 0; ProxyCol < MapWidth; ProxyCol++)
 		{
 			if (TileIndexCol % 256 == 0 && TileIndexCol != 0)
 			{
@@ -361,20 +371,58 @@ TArray<uint16> FWoWLandscapeImporterModule::CreateProxyHeightmap(const int TileR
 			}
 			uint8 TileGridCol = TileCol + GridOffsetCol;
 
-			uint32 TileIndex = (TileIndexRow * 257) + TileIndexCol;
-			uint32 ProxyIndex = (ProxyRow * HeightmapWidth) + ProxyCol;
+			uint32 TileIndexHM = (TileIndexRow * 257) + TileIndexCol;
+			uint32 TileIndexAM = (TileIndexRow * 256) + TileIndexCol;
+			uint32 ProxyIndex = (ProxyRow * MapWidth) + ProxyCol;
 
-			if (!TileGrid[TileGridRow].IsValidIndex(TileGridCol) || TileGrid[TileGridRow][TileGridCol].HeightmapData.IsEmpty())
-				ProxyHeightmap[ProxyIndex] = 0; // If no heightmap data is found, set to 0
-			else
-				ProxyHeightmap[ProxyIndex] = TileGrid[TileGridRow][TileGridCol].HeightmapData[TileIndex];
+			if (TileGrid[TileGridRow].IsValidIndex(TileGridCol) && !TileGrid[TileGridRow][TileGridCol].HeightmapData.IsEmpty())
+			{
+				ProxyHeightmap[ProxyIndex] = TileGrid[TileGridRow][TileGridCol].HeightmapData[TileIndexHM];
 
+				uint8 ChunkIndex = (TileIndexRow / 16) * 16 + (TileIndexCol / 16);
+				FColor PixelData = TileGrid[TileGridRow][TileGridCol].AlphamapData[TileIndexAM];
+				// Calculate the weight for each layer based on the pixel data
+				for (uint16 LayerIndex = 0; LayerIndex < TileGrid[TileGridRow][TileGridCol].Chunks[ChunkIndex].Layers.Num(); ++LayerIndex)
+				{
+					LayerMetadata *LayerMetadata = LayerMetadataMap.Find(TileGrid[TileGridRow][TileGridCol].Chunks[ChunkIndex].Layers[LayerIndex]);
+
+					FLandscapeImportLayerInfo &ImportLayerInfo = LayerInfoMap.FindOrAdd(TileGrid[TileGridRow][TileGridCol].Chunks[ChunkIndex].Layers[LayerIndex]);
+					if (ImportLayerInfo.LayerData.Num() == 0)
+					{
+						ImportLayerInfo.LayerData.SetNumZeroed(MapWidth * MapHeight);
+						ImportLayerInfo.LayerInfo = LayerMetadata->LayerInfo;
+						ImportLayerInfo.LayerName = LayerMetadata->LayerInfo->LayerName;
+					}
+
+					switch (LayerIndex)
+					{
+					case 0:
+						ImportLayerInfo.LayerData[ProxyIndex] = PixelData.A - PixelData.R - PixelData.G - PixelData.B;
+						break;
+
+					case 1:
+						ImportLayerInfo.LayerData[ProxyIndex] = PixelData.R;
+						break;
+
+					case 2:
+						ImportLayerInfo.LayerData[ProxyIndex] = PixelData.G;
+						break;
+
+					case 3:
+						ImportLayerInfo.LayerData[ProxyIndex] = PixelData.B;
+						break;
+					}
+				}
+			}
 			TileIndexCol++;
 		}
 		TileIndexRow++;
 	}
 
-	return ProxyHeightmap;
+	TArray<FLandscapeImportLayerInfo> LayerInfoArray;
+	LayerInfoMap.GenerateValueArray(LayerInfoArray);
+
+	return MakeTuple(MoveTemp(ProxyHeightmap), MoveTemp(LayerInfoArray));
 }
 
 UMaterial *FWoWLandscapeImporterModule::CreateLandscapeMaterial(const FString &BaseDirectoryPath)
@@ -397,12 +445,27 @@ UMaterial *FWoWLandscapeImporterModule::CreateLandscapeMaterial(const FString &B
 
 	UMaterial *LandscapeMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPackagePath));
 
+	// Set Specular and Roughness
+	UMaterialExpressionConstant *SpecularConstant = NewObject<UMaterialExpressionConstant>(LandscapeMaterial);
+	SpecularConstant->R = 0.0f;
+	LandscapeMaterial->GetExpressionCollection().AddExpression(SpecularConstant);
+	LandscapeMaterial->GetExpressionInputForProperty(MP_Specular)->Expression = SpecularConstant;
+	SpecularConstant->MaterialExpressionEditorX = -200;
+	SpecularConstant->MaterialExpressionEditorY = 400;
+
+	UMaterialExpressionConstant *RoughnessConstant = NewObject<UMaterialExpressionConstant>(LandscapeMaterial);
+	RoughnessConstant->R = 0.8f;
+	LandscapeMaterial->GetExpressionCollection().AddExpression(RoughnessConstant);
+	LandscapeMaterial->GetExpressionInputForProperty(MP_Roughness)->Expression = RoughnessConstant;
+	RoughnessConstant->MaterialExpressionEditorX = -200;
+	RoughnessConstant->MaterialExpressionEditorY = 500;
+
 	// Set the material to be used on Landscapes
 	LandscapeMaterial->MaterialDomain = EMaterialDomain::MD_Surface;
 
 	// Create material expressions directly and add them to the material
 	UMaterialExpressionLandscapeLayerCoords *CoordsNode = NewObject<UMaterialExpressionLandscapeLayerCoords>(LandscapeMaterial);
-	CoordsNode->MaterialExpressionEditorX = -550;
+	CoordsNode->MaterialExpressionEditorX = -1050;
 	CoordsNode->MaterialExpressionEditorY = 0;
 	LandscapeMaterial->GetExpressionCollection().AddExpression(CoordsNode);
 
@@ -413,31 +476,29 @@ UMaterial *FWoWLandscapeImporterModule::CreateLandscapeMaterial(const FString &B
 
 	// Loop through our stored layer data to create and connect texture samplers
 	int32 NodeOffsetY = 0;
-	for (auto const &[LayerName, LayerStruct] : LayerStructMap)
+	for (auto const &[LayerName, LayerMetadata] : LayerMetadataMap)
 	{
-		if (LayerStruct.LayerTexture && LayerStruct.LayerInfo)
-		{
-			UMaterialExpressionTextureSample *TextureSampleNode = NewObject<UMaterialExpressionTextureSample>(LandscapeMaterial);
-			TextureSampleNode->MaterialExpressionEditorX = -350;
-			TextureSampleNode->MaterialExpressionEditorY = NodeOffsetY;
-			LandscapeMaterial->GetExpressionCollection().AddExpression(TextureSampleNode);
 
-			if (TextureSampleNode)
-			{
-				TextureSampleNode->Texture = LayerStruct.LayerTexture.Get();
-				TextureSampleNode->Coordinates.Expression = CoordsNode;
+		UMaterialExpressionTextureSample *TextureSampleNode = NewObject<UMaterialExpressionTextureSample>(LandscapeMaterial);
+		TextureSampleNode->MaterialExpressionEditorX = -1050;
+		TextureSampleNode->MaterialExpressionEditorY = NodeOffsetY;
+		LandscapeMaterial->GetExpressionCollection().AddExpression(TextureSampleNode);
 
-				FLayerBlendInput LayerInput;
-				LayerInput.LayerName = LayerStruct.LayerInfo->LayerName;
-				LayerInput.BlendType = LB_WeightBlend;
-				LayerInput.LayerInput.Expression = TextureSampleNode;
-				LayerInput.LayerInput.OutputIndex = 0;
-				LayerInput.PreviewWeight = (LayerBlendNode->Layers.Num() == 0) ? 1.0f : 0.0f;
-				LayerBlendNode->Layers.Add(LayerInput);
+		TextureSampleNode->Texture = LayerMetadata.LayerTexture.Get();
+		TextureSampleNode->Coordinates.Expression = CoordsNode;
 
-				NodeOffsetY += 150;
-			}
-		}
+		if (LayerMetadata.LayerTexture->CompressionSettings == TC_Normalmap)
+			TextureSampleNode->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Normal;
+
+		FLayerBlendInput LayerInput;
+		LayerInput.LayerName = LayerMetadata.LayerInfo->LayerName;
+		LayerInput.BlendType = LB_AlphaBlend;
+		LayerInput.LayerInput.Expression = TextureSampleNode;
+		LayerInput.LayerInput.OutputIndex = 0;
+		LayerInput.PreviewWeight = (LayerBlendNode->Layers.Num() == 0) ? 1.0f : 0.0f;
+		LayerBlendNode->Layers.Add(LayerInput);
+
+		NodeOffsetY += 250;
 	}
 
 	// Connect the final blend node to the material's Base Color output

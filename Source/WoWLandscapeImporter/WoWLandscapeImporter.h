@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 #include "Math/Color.h"
+#include "LandscapeProxy.h"
 
 class FToolBarBuilder;
 class FMenuBuilder;
@@ -29,9 +30,8 @@ struct Tile
 	}
 };
 
-struct LayerStruct
+struct LayerMetadata
 {
-	TArray<uint8> LayerData;
 	TObjectPtr<ULandscapeLayerInfoObject> LayerInfo;
 	TObjectPtr<UTexture2D> LayerTexture;
 };
@@ -63,7 +63,8 @@ private:
 	/** Function to import texture and create layer info*/
 	FName ImportTexture_CreateLayerInfo(const FString &RelativeTexturePath, const FString &BaseDirectoryPath);
 
-	TArray<uint16> CreateProxyHeightmap(const int TileRow, const int TileCol, const uint8 CompPerProxy);
+	/** Function to create proxy data for landscape import */
+	TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> CreateProxyData(const int TileRow, const int TileCol, const uint8 CompPerProxy);
 
 	UMaterial *CreateLandscapeMaterial(const FString &BaseDirectoryPath);
 
@@ -74,6 +75,6 @@ private:
 
 	TArray<TArray<Tile>> TileGrid;
 
-	/** Key-value store for data arrays of landscape layers */
-	TMap<FString, LayerStruct> LayerStructMap;
+	/** Key-value store for data and metadata of landscape layers */
+	TMap<FName, LayerMetadata> LayerMetadataMap;
 };
