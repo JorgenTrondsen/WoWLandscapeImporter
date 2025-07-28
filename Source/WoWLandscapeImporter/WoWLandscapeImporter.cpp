@@ -28,14 +28,34 @@
 #include "LandscapeLayerInfoObject.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialInstance.h"
+#include "Materials/MaterialInstanceConstant.h"
+#include "Factories/MaterialInstanceConstantFactoryNew.h"
 #include "Materials/MaterialExpressionLandscapeLayerBlend.h"
 #include "Materials/MaterialExpressionTextureSample.h"
+#include "Materials/MaterialExpressionMakeMaterialAttributes.h"
+#include "Materials/MaterialExpressionDivide.h"
+#include "Materials/MaterialExpressionNamedReroute.h"
 #include "Factories/MaterialFactoryNew.h"
 #include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionViewProperty.h"
+#include "Materials/MaterialExpressionPower.h"
+#include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionSubtract.h"
+#include "Materials/MaterialExpressionSaturate.h"
+#include "Materials/MaterialExpressionLinearInterpolate.h"
+#include "Materials/MaterialExpressionGetMaterialAttributes.h"
+#include "Materials/MaterialExpressionRuntimeVirtualTextureOutput.h"
+#include "Materials/MaterialExpressionRuntimeVirtualTextureSample.h"
+#include "Materials/MaterialExpressionSetMaterialAttributes.h"
 #include "MaterialDomain.h"
-#include "Materials/MaterialExpressionLandscapeLayerCoords.h" // Required for landscape UVs
+#include "Materials/MaterialExpressionLandscapeLayerCoords.h" 
 #include "MaterialEditorUtilities.h"
-#include "MaterialGraph/MaterialGraph.h" // **FIX**: Provides the full definition of UMaterialGraph
+#include "MaterialGraph/MaterialGraph.h" 
+#include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#include "Materials/MaterialAttributeDefinitionMap.h"
+#include "UObject/ConstructorHelpers.h"
 
 static const FName WoWLandscapeImporterTabName("WoWLandscapeImporter");
 
@@ -229,9 +249,13 @@ void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 
 			TileGrid[FCString::Atoi(*NameParts[2]) - RowOrigin][FCString::Atoi(*NameParts[1]) - ColumnOrigin] = NewTile;
 		}
-
+		
+		
+		uint8 CompPerProxy = 1;
+		uint8 NumProxiesX = FMath::DivideAndRoundUp(TileRows, CompPerProxy);
+		uint8 NumProxiesY = FMath::DivideAndRoundUp(TileColumns, CompPerProxy);
 		// Use a Scoped Slow Task to provide feedback to the user and prevent the editor from freezing.
-		FScopedSlowTask SlowTask(TileRows * TileColumns, LOCTEXT("ImportingWoWLandscape", "Importing WoW Landscape..."));
+		FScopedSlowTask SlowTask(NumProxiesX * NumProxiesY, LOCTEXT("ImportingWoWLandscape", "Importing WoW Landscape..."));
 		SlowTask.MakeDialog();
 
 		// Create the main landscape actor first
@@ -248,29 +272,24 @@ void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 		Landscape->ComponentSizeQuads = 254;
 		Landscape->SubsectionSizeQuads = 127;
 		Landscape->NumSubsections = 2;
-
-		// Create and assign the landscape material
-		UMaterial *LandscapeMaterial = CreateLandscapeMaterial(DirectoryPath);
-		Landscape->LandscapeMaterial = LandscapeMaterial;
-
+		
 		ULandscapeInfo *LandscapeInfo = Landscape->CreateLandscapeInfo();
-
-		uint8 CompPerProxy = 1;
+		
 		for (int TileRow = 0; TileRow < TileRows; TileRow += CompPerProxy)
 		{
 			for (int TileCol = 0; TileCol < TileColumns; TileCol += CompPerProxy)
 			{
 				// Update the slow task dialog
-				SlowTask.EnterProgressFrame(CompPerProxy * CompPerProxy, FText::Format(LOCTEXT("ImportingProxy", "Importing Proxy at (Row {1}), (Column {0})"), TileRow, TileCol));
-
+				SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("ImportingProxy", "Importing Proxy at (Row {1}), (Column {0})"), TileRow, TileCol));
+				
 				TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> ProxyData = this->CreateProxyData(TileRow, TileCol, CompPerProxy);
-
+				
 				// Create a LandscapeStreamingProxy actor for the current tiles
 				ALandscapeStreamingProxy *StreamingProxy = GEditor->GetEditorWorldContext().World()->SpawnActor<ALandscapeStreamingProxy>();
 				StreamingProxy->SetActorLabel(FString::Printf(TEXT("%d_%d_Proxy"), TileCol, TileRow));
 				StreamingProxy->SetActorScale3D(Landscape->GetActorScale3D());
 				StreamingProxy->SetActorLocation(Landscape->GetActorLocation());
-
+				
 				// Prepare data for the Import function on the streaming proxy
 				TMap<FGuid, TArray<uint16>> HeightDataPerLayer;
 				HeightDataPerLayer.Add(FGuid(), MoveTemp(ProxyData.Get<0>()));
@@ -284,11 +303,13 @@ void FWoWLandscapeImporterModule::ImportLandscape(const FString &DirectoryPath)
 				uint32 MaxX = MinX + (254 * CompPerProxy);
 				uint32 MaxY = MinY + (254 * CompPerProxy);
 				StreamingProxy->Import(FGuid::NewGuid(), MinX, MinY, MaxX, MaxY, 2, 127, HeightDataPerLayer, nullptr, MaterialLayerDataPerLayer, ELandscapeImportAlphamapType::Additive);
-
+				
 				StreamingProxy->SetLandscapeGuid(LandscapeGuid);
 				LandscapeInfo->RegisterActor(StreamingProxy);
 			}
 		}
+		// Create and assign the landscape material
+		CreateLandscapeMaterial(DirectoryPath, Landscape);
 	}
 }
 
@@ -375,7 +396,7 @@ TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterM
 			uint32 TileIndexAM = (TileIndexRow * 256) + TileIndexCol;
 			uint32 ProxyIndex = (ProxyRow * MapWidth) + ProxyCol;
 
-			if (TileGrid[TileGridRow].IsValidIndex(TileGridCol) && !TileGrid[TileGridRow][TileGridCol].HeightmapData.IsEmpty())
+			if (TileGrid.IsValidIndex(TileGridRow) && TileGrid[TileGridRow].IsValidIndex(TileGridCol) && !TileGrid[TileGridRow][TileGridCol].HeightmapData.IsEmpty())
 			{
 				ProxyHeightmap[ProxyIndex] = TileGrid[TileGridRow][TileGridCol].HeightmapData[TileIndexHM];
 
@@ -425,100 +446,259 @@ TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterM
 	return MakeTuple(MoveTemp(ProxyHeightmap), MoveTemp(LayerInfoArray));
 }
 
-UMaterial *FWoWLandscapeImporterModule::CreateLandscapeMaterial(const FString &BaseDirectoryPath)
+void FWoWLandscapeImporterModule::CreateLandscapeMaterial(const FString &BaseDirectoryPath, ALandscape *Landscape)
 {
-	const FString MaterialDirectory = TEXT("/Game/Assets_Configuration/Materials");
-	const FString BaseName = FPaths::GetCleanFilename(BaseDirectoryPath);
-	const FString MaterialName = FString::Printf(TEXT("M_Landscape_%s"), *BaseName);
-	const FString MaterialPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *MaterialName);
+    const FString MaterialDirectory = TEXT("/Game/Assets_Configuration/Materials");
+    const FString BaseName = FPaths::GetCleanFilename(BaseDirectoryPath);
+    
+    if (!UEditorAssetLibrary::DoesDirectoryExist(MaterialDirectory))
+    UEditorAssetLibrary::MakeDirectory(MaterialDirectory);
+    
+    IAssetTools &AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+    
+    // Create the RVT asset
+    const FString RVTName = FString::Printf(TEXT("RVT_%s"), *BaseName);
+    const FString RVTPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *RVTName);
+    AssetTools.CreateAsset(RVTName, MaterialDirectory, URuntimeVirtualTexture::StaticClass(), nullptr);
 
-	if (!UEditorAssetLibrary::DoesDirectoryExist(MaterialDirectory))
-		UEditorAssetLibrary::MakeDirectory(MaterialDirectory);
+    // Load the RVT asset
+    URuntimeVirtualTexture *RVTAsset = Cast<URuntimeVirtualTexture>(UEditorAssetLibrary::LoadAsset(RVTPackagePath));
+	Landscape->RuntimeVirtualTextures.Add(RVTAsset);
 
-	// --- STEP 1: Create the material asset ---
+    // Create the material asset
+    const FString MaterialName = FString::Printf(TEXT("M_Landscape_%s"), *BaseName);
+    const FString MaterialPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *MaterialName);
+    UMaterialFactoryNew *MaterialFactory = NewObject<UMaterialFactoryNew>();
+    AssetTools.CreateAsset(MaterialName, MaterialDirectory, UMaterial::StaticClass(), MaterialFactory);
+    
+    // Load the asset and perform all modifications
+    UMaterial *LandscapeMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPackagePath));
+	LandscapeMaterial->bUseMaterialAttributes = true;
+	
+	// -- Calculate the UV mapping for the landscape --
+	int32 Section0 = -3800;
+	UMaterialExpressionLandscapeLayerCoords *CoordsNode = CreateNode(NewObject<UMaterialExpressionLandscapeLayerCoords>(LandscapeMaterial), Section0, 0, LandscapeMaterial);
 
-	IAssetTools &AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	UMaterialFactoryNew *MaterialFactory = NewObject<UMaterialFactoryNew>();
-	AssetTools.CreateAsset(MaterialName, MaterialDirectory, UMaterial::StaticClass(), MaterialFactory);
+	// Create Near and Far tiling size parameters
+	UMaterialExpressionScalarParameter *NearTilingSize = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial), Section0, 150, LandscapeMaterial);
+	NearTilingSize->ParameterName = FName("NearTilingSize");
+	NearTilingSize->Group = FName("DistanceBlend");
+	NearTilingSize->DefaultValue = 3.0f;
+	UMaterialExpressionScalarParameter *FarTilingSize = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial), Section0, 250, LandscapeMaterial);
+	FarTilingSize->ParameterName = FName("FarTilingSize");
+	FarTilingSize->Group = FName("DistanceBlend");
+	FarTilingSize->DefaultValue = 30.0f;
 
-	// --- STEP 2: Load the asset and perform all modifications ---
+	// Create divide nodes to calculate UVs based on tiling sizes
+	UMaterialExpressionDivide* DivideNodeNear = CreateNode(NewObject<UMaterialExpressionDivide>(LandscapeMaterial), Section0 + 300, 0, LandscapeMaterial);
+	DivideNodeNear->A.Expression = CoordsNode;
+	DivideNodeNear->B.Expression = NearTilingSize;
+	UMaterialExpressionDivide* DivideNodeFar = CreateNode(NewObject<UMaterialExpressionDivide>(LandscapeMaterial), Section0 + 300, 100, LandscapeMaterial);
+	DivideNodeFar->A.Expression = CoordsNode;
+	DivideNodeFar->B.Expression = FarTilingSize;
 
-	UMaterial *LandscapeMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPackagePath));
+	// Create reroute nodes for Near and Far UVs
+	UMaterialExpressionNamedRerouteDeclaration *NearReroute = CreateNode(NewObject<UMaterialExpressionNamedRerouteDeclaration>(LandscapeMaterial), Section0 + 450, 0, LandscapeMaterial);
+    NearReroute->Name = FName("NearUV");
+	NearReroute->NodeColor = FLinearColor::Blue;
+	NearReroute->Input.Expression = DivideNodeNear;
+    UMaterialExpressionNamedRerouteDeclaration *FarReroute = CreateNode(NewObject<UMaterialExpressionNamedRerouteDeclaration>(LandscapeMaterial), Section0 + 450, 100, LandscapeMaterial);
+    FarReroute->Name = FName("FarUV");
+	FarReroute->NodeColor = FLinearColor::Red;
+    FarReroute->Input.Expression = DivideNodeFar;
 
-	// Set Specular and Roughness
-	UMaterialExpressionConstant *SpecularConstant = NewObject<UMaterialExpressionConstant>(LandscapeMaterial);
-	SpecularConstant->R = 0.0f;
-	LandscapeMaterial->GetExpressionCollection().AddExpression(SpecularConstant);
-	LandscapeMaterial->GetExpressionInputForProperty(MP_Specular)->Expression = SpecularConstant;
-	SpecularConstant->MaterialExpressionEditorX = -200;
-	SpecularConstant->MaterialExpressionEditorY = 400;
+	// -- RVT MIP based depth fading --
+	UMaterialExpressionConstant *ConstantNode = CreateNode(NewObject<UMaterialExpressionConstant>(LandscapeMaterial), Section0, 500, LandscapeMaterial);
+	ConstantNode->R = 2.0f;
 
-	UMaterialExpressionConstant *RoughnessConstant = NewObject<UMaterialExpressionConstant>(LandscapeMaterial);
-	RoughnessConstant->R = 0.8f;
-	LandscapeMaterial->GetExpressionCollection().AddExpression(RoughnessConstant);
-	LandscapeMaterial->GetExpressionInputForProperty(MP_Roughness)->Expression = RoughnessConstant;
-	RoughnessConstant->MaterialExpressionEditorX = -200;
-	RoughnessConstant->MaterialExpressionEditorY = 500;
+	UMaterialExpressionViewProperty *ViewProperty = CreateNode(NewObject<UMaterialExpressionViewProperty>(LandscapeMaterial), Section0, 600, LandscapeMaterial);
+	ViewProperty->Property = MEVP_RuntimeVirtualTextureOutputLevel;
 
-	// Set the material to be used on Landscapes
-	LandscapeMaterial->MaterialDomain = EMaterialDomain::MD_Surface;
+	UMaterialExpressionPower *PowerNode = CreateNode(NewObject<UMaterialExpressionPower>(LandscapeMaterial), Section0 + 300, 600, LandscapeMaterial);
+	PowerNode->Base.Expression = ConstantNode;
+	PowerNode->Exponent.Expression = ViewProperty;
 
-	// Create material expressions directly and add them to the material
-	UMaterialExpressionLandscapeLayerCoords *CoordsNode = NewObject<UMaterialExpressionLandscapeLayerCoords>(LandscapeMaterial);
-	CoordsNode->MaterialExpressionEditorX = -1050;
-	CoordsNode->MaterialExpressionEditorY = 0;
-	LandscapeMaterial->GetExpressionCollection().AddExpression(CoordsNode);
+	UMaterialExpressionMultiply *MultiplyNode = CreateNode(NewObject<UMaterialExpressionMultiply>(LandscapeMaterial), Section0 + 450, 600, LandscapeMaterial);
+	MultiplyNode->A.Expression = PowerNode;
+	MultiplyNode->ConstB = 1000.0f;
 
-	UMaterialExpressionLandscapeLayerBlend *LayerBlendNode = NewObject<UMaterialExpressionLandscapeLayerBlend>(LandscapeMaterial);
-	LayerBlendNode->MaterialExpressionEditorX = 0;
-	LayerBlendNode->MaterialExpressionEditorY = 150;
-	LandscapeMaterial->GetExpressionCollection().AddExpression(LayerBlendNode);
+	UMaterialExpressionScalarParameter *BlendDistanceStart = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial), Section0 + 450, 500, LandscapeMaterial);
+	BlendDistanceStart->ParameterName = FName("BlendDistanceStart");
+	BlendDistanceStart->Group = FName("DistanceBlend");
+	BlendDistanceStart->DefaultValue = 16000.0f;
+
+	UMaterialExpressionSubtract *SubtractNode = CreateNode(NewObject<UMaterialExpressionSubtract>(LandscapeMaterial), Section0 + 650, 600, LandscapeMaterial);
+	SubtractNode->A.Expression = MultiplyNode;
+	SubtractNode->B.Expression = BlendDistanceStart;
+
+	UMaterialExpressionSaturate *SaturateNode = CreateNode(NewObject<UMaterialExpressionSaturate>(LandscapeMaterial), Section0 + 975, 600, LandscapeMaterial);
+	SaturateNode->Input.Expression = SubtractNode;
+
+	UMaterialExpressionNamedRerouteDeclaration *DepthFadeReroute = CreateNode(NewObject<UMaterialExpressionNamedRerouteDeclaration>(LandscapeMaterial), Section0 + 1100, 600, LandscapeMaterial);
+	DepthFadeReroute->Name = FName("DepthFade");
+	DepthFadeReroute->NodeColor = FLinearColor::Green;
+	DepthFadeReroute->Input.Expression = SaturateNode;
+
+	int32 Section1 = -2500;
+    UMaterialExpressionLandscapeLayerBlend *LayerBlendNode = CreateNode(NewObject<UMaterialExpressionLandscapeLayerBlend>(LandscapeMaterial), Section1 + 1400, 0, LandscapeMaterial);
+
+    // Find the 3PointLevels Material Function
+	UMaterialFunction* ThreePointLevelsFunc = LoadObject<UMaterialFunction>(nullptr, TEXT("/Engine/Functions/Engine_MaterialFunctions02/3PointLevels.3PointLevels"));
+
+	// Create black value, gray value, and white value parameters
+	UMaterialExpressionScalarParameter *BlackValueNode = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial),Section1 + 1000, -250, LandscapeMaterial);
+	BlackValueNode->ParameterName = FName("BlackValue");
+	BlackValueNode->Group = FName("3PointLevels");
+	BlackValueNode->DefaultValue = 0.5f;
+	UMaterialExpressionScalarParameter *GrayValueNode = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial),Section1 + 1000, -175, LandscapeMaterial);
+	GrayValueNode->ParameterName = FName("GrayValue");
+	GrayValueNode->Group = FName("3PointLevels");
+	GrayValueNode->DefaultValue = 0.6f;
+	UMaterialExpressionScalarParameter *WhiteValueNode = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial),Section1 + 1000, -100, LandscapeMaterial);
+	WhiteValueNode->ParameterName = FName("WhiteValue");
+	WhiteValueNode->Group = FName("3PointLevels");
+	WhiteValueNode->DefaultValue = 1.0f;
+	UMaterialExpressionNamedRerouteDeclaration *BlackValueReroute = CreateNode(NewObject<UMaterialExpressionNamedRerouteDeclaration>(LandscapeMaterial), Section1 + 1200, -250, LandscapeMaterial);
+	BlackValueReroute->Name = FName("BlackValue");
+	BlackValueReroute->NodeColor = FLinearColor::Black;
+	BlackValueReroute->Input.Expression = BlackValueNode;
+	UMaterialExpressionNamedRerouteDeclaration *GrayValueReroute = CreateNode(NewObject<UMaterialExpressionNamedRerouteDeclaration>(LandscapeMaterial), Section1 + 1200, -175, LandscapeMaterial);
+	GrayValueReroute->Name = FName("GrayValue");
+	GrayValueReroute->NodeColor = FLinearColor::Gray;
+	GrayValueReroute->Input.Expression = GrayValueNode;
+	UMaterialExpressionNamedRerouteDeclaration *WhiteValueReroute = CreateNode(NewObject<UMaterialExpressionNamedRerouteDeclaration>(LandscapeMaterial), Section1 + 1200, -100, LandscapeMaterial);
+	WhiteValueReroute->Name = FName("WhiteValue");
+	WhiteValueReroute->NodeColor = FLinearColor::White;
+	WhiteValueReroute->Input.Expression = WhiteValueNode;
 
 	// Loop through our stored layer data to create and connect texture samplers
-	int32 NodeOffsetY = 0;
-	for (auto const &[LayerName, LayerMetadata] : LayerMetadataMap)
-	{
+    int32 NodeOffsetY = 0;
+    for (auto const &[LayerName, LayerMetadata] : LayerMetadataMap)
+    {
+        UMaterialExpressionNamedRerouteUsage *NearRerouteUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1, NodeOffsetY, LandscapeMaterial);
+        NearRerouteUsage->Declaration = NearReroute;
+		UMaterialExpressionNamedRerouteUsage *FarRerouteUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1, NodeOffsetY + 300, LandscapeMaterial);
+        FarRerouteUsage->Declaration = FarReroute;
+		
+        UMaterialExpressionTextureSample *TextureSampleNear = CreateNode(NewObject<UMaterialExpressionTextureSample>(LandscapeMaterial), Section1 + 100, NodeOffsetY, LandscapeMaterial);
+        TextureSampleNear->Texture = LayerMetadata.LayerTexture.Get();
+        TextureSampleNear->Coordinates.Expression = NearRerouteUsage;
+        TextureSampleNear->SamplerSource = ESamplerSourceMode::SSM_Wrap_WorldGroupSettings;
+        UMaterialExpressionTextureSample *TextureSampleFar = CreateNode(NewObject<UMaterialExpressionTextureSample>(LandscapeMaterial), Section1 + 100, NodeOffsetY + 300, LandscapeMaterial);
+		TextureSampleFar->Texture = LayerMetadata.LayerTexture.Get();
+		TextureSampleFar->Coordinates.Expression = FarRerouteUsage;
+		TextureSampleFar->SamplerSource = ESamplerSourceMode::SSM_Wrap_WorldGroupSettings;
 
-		UMaterialExpressionTextureSample *TextureSampleNode = NewObject<UMaterialExpressionTextureSample>(LandscapeMaterial);
-		TextureSampleNode->MaterialExpressionEditorX = -1050;
-		TextureSampleNode->MaterialExpressionEditorY = NodeOffsetY;
-		LandscapeMaterial->GetExpressionCollection().AddExpression(TextureSampleNode);
+        if (LayerMetadata.LayerTexture->CompressionSettings == TC_Normalmap)
+		{
+            TextureSampleNear->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Normal;
+			TextureSampleFar->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Normal;
+		}
+		
+		UMaterialExpressionNamedRerouteUsage *DepthFadeRerouteUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1 + 500, NodeOffsetY + 200, LandscapeMaterial);
+		DepthFadeRerouteUsage->Declaration = DepthFadeReroute;
 
-		TextureSampleNode->Texture = LayerMetadata.LayerTexture.Get();
-		TextureSampleNode->Coordinates.Expression = CoordsNode;
+		UMaterialExpressionLinearInterpolate *LerpBaseColor = CreateNode(NewObject<UMaterialExpressionLinearInterpolate>(LandscapeMaterial), Section1 + 500, NodeOffsetY, LandscapeMaterial);
+		LerpBaseColor->A.Expression = TextureSampleNear;
+		LerpBaseColor->B.Expression = TextureSampleFar;
+		LerpBaseColor->Alpha.Expression = DepthFadeRerouteUsage;
+		UMaterialExpressionLinearInterpolate *LerpAlpha = CreateNode(NewObject<UMaterialExpressionLinearInterpolate>(LandscapeMaterial), Section1 + 500, NodeOffsetY + 300, LandscapeMaterial);
+		LerpAlpha->A.Expression = TextureSampleNear;
+		LerpAlpha->B.Expression = TextureSampleFar;
+		LerpAlpha->Alpha.Expression = DepthFadeRerouteUsage;
+		LerpAlpha->A.OutputIndex = 4; 
+		LerpAlpha->B.OutputIndex = 4; 
 
-		if (LayerMetadata.LayerTexture->CompressionSettings == TC_Normalmap)
-			TextureSampleNode->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Normal;
+        // Connect the output 0 of the texture sample to the MakeMaterialAttributes node
+        UMaterialExpressionMakeMaterialAttributes *MakeMaterialAttributesNode = CreateNode(NewObject<UMaterialExpressionMakeMaterialAttributes>(LandscapeMaterial), Section1 + 700, NodeOffsetY, LandscapeMaterial);
+        MakeMaterialAttributesNode->BaseColor.Expression = LerpBaseColor;
+		
+		UMaterialExpressionMaterialFunctionCall *LevelsNode = CreateNode(NewObject<UMaterialExpressionMaterialFunctionCall>(LandscapeMaterial),Section1 + 1050, NodeOffsetY + 150, LandscapeMaterial);
+		LevelsNode->MaterialFunction = ThreePointLevelsFunc;
+		LevelsNode->UpdateFromFunctionResource();
 
-		FLayerBlendInput LayerInput;
-		LayerInput.LayerName = LayerMetadata.LayerInfo->LayerName;
-		LayerInput.BlendType = LB_AlphaBlend;
-		LayerInput.LayerInput.Expression = TextureSampleNode;
-		LayerInput.LayerInput.OutputIndex = 0;
-		LayerInput.PreviewWeight = (LayerBlendNode->Layers.Num() == 0) ? 1.0f : 0.0f;
+		// Connect the alpha channel of the texture to the 'Input' of the 3PointLevels function
+		LevelsNode->GetInput(0)->Expression = LerpAlpha;
+
+		// Connect the black, gray, and white values to the 3PointLevels function
+		UMaterialExpressionNamedRerouteUsage *BlackValueUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1 + 900, NodeOffsetY + 250, LandscapeMaterial);
+		BlackValueUsage->Declaration = BlackValueReroute;
+		LevelsNode->GetInput(2)->Expression = BlackValueUsage;
+		UMaterialExpressionNamedRerouteUsage *GrayValueUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1 + 900, NodeOffsetY + 325, LandscapeMaterial);
+		GrayValueUsage->Declaration = GrayValueReroute;
+		LevelsNode->GetInput(3)->Expression = GrayValueUsage;
+		UMaterialExpressionNamedRerouteUsage *WhiteValueUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1 + 900, NodeOffsetY + 400, LandscapeMaterial);
+		WhiteValueUsage->Declaration = WhiteValueReroute;
+		LevelsNode->GetInput(4)->Expression = WhiteValueUsage;
+
+        FLayerBlendInput LayerInput;
+        LayerInput.LayerName = LayerMetadata.LayerInfo->LayerName;
+        LayerInput.BlendType = LB_HeightBlend;
+        LayerInput.LayerInput.Expression = MakeMaterialAttributesNode;
+		LayerInput.HeightInput.Expression = LevelsNode;
+		
 		LayerBlendNode->Layers.Add(LayerInput);
 
-		NodeOffsetY += 250;
+		NodeOffsetY += 600;
 	}
+	UMaterialExpressionGetMaterialAttributes *GetMaterialAttributesNode = CreateNode(NewObject<UMaterialExpressionGetMaterialAttributes>(LandscapeMaterial), Section1 + 1800, 300, LandscapeMaterial);
+	GetMaterialAttributesNode->AttributeGetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_BaseColor));
+	GetMaterialAttributesNode->AttributeGetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_Specular));
+	GetMaterialAttributesNode->AttributeGetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_Roughness));
+	GetMaterialAttributesNode->AttributeGetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_Normal));
+	GetMaterialAttributesNode->Outputs.SetNum(GetMaterialAttributesNode->AttributeGetTypes.Num() + 1);
+	GetMaterialAttributesNode->MaterialAttributes.Expression = LayerBlendNode;
 
-	// Connect the final blend node to the material's Base Color output
-	if (LayerBlendNode && LayerBlendNode->Layers.Num() > 0)
+	// RVT output class does not have Minimal API, so we use FindObject to get the class. (This is a workaround)
+	UClass *RVTOutputClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.MaterialExpressionRuntimeVirtualTextureOutput"));
+	UMaterialExpression *RVTOutputExpression = Cast<UMaterialExpression>(NewObject<UObject>(LandscapeMaterial, RVTOutputClass));
+	UMaterialExpressionCustomOutput *RVTOutputNode = Cast<UMaterialExpressionCustomOutput>(CreateNode(RVTOutputExpression, Section1 + 2200, 300, LandscapeMaterial));
+	// Connect the output of the GetMaterialAttributes node to the RVT output node
+	for (int i = 0; i < GetMaterialAttributesNode->AttributeGetTypes.Num(); ++i)
 	{
-		FExpressionInput *BaseColorInput = LandscapeMaterial->GetExpressionInputForProperty(MP_BaseColor);
-		if (BaseColorInput)
-		{
-			BaseColorInput->Expression = LayerBlendNode;
-		}
+		RVTOutputNode->GetInput(i)->Expression = GetMaterialAttributesNode;
+		RVTOutputNode->GetInput(i)->OutputIndex = i + 1;
 	}
 
-	// Update and recompile the material
-	FPropertyChangedEvent PropertyChangedEvent(nullptr);
-	LandscapeMaterial->PostEditChangeProperty(PropertyChangedEvent);
+	UMaterialExpressionRuntimeVirtualTextureSample *RVTSampleNode = CreateNode(NewObject<UMaterialExpressionRuntimeVirtualTextureSample>(LandscapeMaterial), Section1 + 1800, 0, LandscapeMaterial);
+	RVTSampleNode->VirtualTexture = RVTAsset;
+	RVTSampleNode->MaterialType = ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular;
 
-	// Mark the package as needing to be saved.
+	UMaterialExpressionSetMaterialAttributes *SetMaterialAttributesNode = CreateNode(NewObject<UMaterialExpressionSetMaterialAttributes>(LandscapeMaterial), Section1 + 2200, 0, LandscapeMaterial);
+	SetMaterialAttributesNode->AttributeSetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_BaseColor));
+	SetMaterialAttributesNode->AttributeSetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_Specular));
+	SetMaterialAttributesNode->AttributeSetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_Roughness));
+	SetMaterialAttributesNode->AttributeSetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_Normal));
+	SetMaterialAttributesNode->Inputs.SetNum(SetMaterialAttributesNode->AttributeSetTypes.Num() + 1);
+	for (int i = 0; i < SetMaterialAttributesNode->AttributeSetTypes.Num(); ++i)
+	{
+		SetMaterialAttributesNode->GetInput(i + 1)->Expression = RVTSampleNode;
+		SetMaterialAttributesNode->GetInput(i + 1)->OutputIndex = i;
+	}
+
+	// Connect the final material attributes to the material's output
+	LandscapeMaterial->GetExpressionInputForProperty(MP_MaterialAttributes)->Expression = SetMaterialAttributesNode;
+
+	// Mark the package as needing to be saved and update the material
 	LandscapeMaterial->MarkPackageDirty();
+	LandscapeMaterial->PostEditChange();
 
-	return LandscapeMaterial;
+	// Create a landscape material instance and return it
+	const FString MaterialInstanceName = FString::Printf(TEXT("MI_Landscape_%s"), *BaseName);
+	const FString MaterialInstancePackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *MaterialInstanceName);
+
+	// Create the material instance asset
+	UMaterialInstanceConstantFactoryNew *MaterialInstanceFactory = NewObject<UMaterialInstanceConstantFactoryNew>();
+	AssetTools.CreateAsset(MaterialInstanceName, MaterialDirectory, UMaterialInstanceConstant::StaticClass(), MaterialInstanceFactory);
+
+	// Load and configure the material instance
+	UMaterialInstanceConstant *MaterialInstance = Cast<UMaterialInstanceConstant>(UEditorAssetLibrary::LoadAsset(MaterialInstancePackagePath));
+	MaterialInstance->SetParentEditorOnly(LandscapeMaterial);
+
+	// Update and mark as dirty
+	MaterialInstance->MarkPackageDirty();
+
+	Landscape->LandscapeMaterial = MaterialInstance;
 }
 
 void FWoWLandscapeImporterModule::UpdateStatusMessage(const FString &Message, bool bIsError)

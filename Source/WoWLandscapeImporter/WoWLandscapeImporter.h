@@ -66,7 +66,17 @@ private:
 	/** Function to create proxy data for landscape import */
 	TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> CreateProxyData(const int TileRow, const int TileCol, const uint8 CompPerProxy);
 
-	UMaterial *CreateLandscapeMaterial(const FString &BaseDirectoryPath);
+	void CreateLandscapeMaterial(const FString &BaseDirectoryPath, ALandscape *Landscape);
+
+	template <typename NodeType>
+	NodeType *CreateNode(NodeType *NewObject, int32 EditorX, int32 EditorY, UMaterial *LandscapeMaterial)
+	{
+		NodeType *Node = NewObject;
+		Node->MaterialExpressionEditorX = EditorX;
+		Node->MaterialExpressionEditorY = EditorY;
+		LandscapeMaterial->GetExpressionCollection().AddExpression(Node);
+		return Node;
+	}
 
 	TSharedPtr<class FUICommandList> PluginCommands;
 
