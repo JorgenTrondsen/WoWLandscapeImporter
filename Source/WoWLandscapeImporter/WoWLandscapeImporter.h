@@ -24,6 +24,8 @@ struct Tile
 	TArray<FColor> AlphamapData;
 	TArray<Chunk> Chunks;
 
+	uint8 Column, Row;
+
 	Tile()
 	{
 		Chunks.SetNum(256);
@@ -34,6 +36,23 @@ struct LayerMetadata
 {
 	TObjectPtr<ULandscapeLayerInfoObject> LayerInfo;
 	TObjectPtr<UTexture2D> LayerTexture;
+};
+
+struct ActorData
+{
+	FString ModelPath;
+	FVector Position;
+	FRotator Rotation;
+	double Scale;
+
+	// Equality operator for TArray::Contains
+	bool operator==(const ActorData& Other) const
+	{
+		return ModelPath == Other.ModelPath &&
+			   Position.Equals(Other.Position, 0.1f) &&
+			   Rotation.Equals(Other.Rotation, 0.1f) &&
+			   FMath::IsNearlyEqual(Scale, Other.Scale, 0.1f);
+	}
 };
 
 class FWoWLandscapeImporterModule : public IModuleInterface
@@ -60,8 +79,14 @@ private:
 	/** Update the status message in the UI */
 	void UpdateStatusMessage(const FString &Message, bool bIsError = false);
 
-	/** Function to import texture and create layer info*/
-	FName ImportTexture_CreateLayerInfo(const FString &RelativeTexturePath, const FString &BaseDirectoryPath);
+	/** Function to create layer info corresponding to a texture */
+	FName CreateLayerInfo(const FString &TextureFileName, const FString &DestinationDirectory, UObject *ImportedTexture);
+
+	/** Function to import/find asset, returns the imported/found asset */
+	UTexture2D *ImportTexture(const FString &TexturePath, const FString &DestinationDirectory);
+
+	/** Test function for asset import */
+	TArray<UStaticMesh*> ImportModels(TArray<FString> &ModelPaths);
 
 	/** Function to create proxy data for landscape import */
 	TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> CreateProxyData(const int TileRow, const int TileCol, const uint8 CompPerProxy);
