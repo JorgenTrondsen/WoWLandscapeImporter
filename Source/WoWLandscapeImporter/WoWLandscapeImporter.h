@@ -46,7 +46,7 @@ struct ActorData
 	double Scale;
 
 	// Equality operator for TArray::Contains
-	bool operator==(const ActorData& Other) const
+	bool operator==(const ActorData &Other) const
 	{
 		return ModelPath == Other.ModelPath &&
 			   Position.Equals(Other.Position, 0.1f) &&
@@ -69,7 +69,7 @@ public:
 	FReply OnImportButtonClicked();
 
 	/** Function to import landscape */
-	void ImportLandscape(const FString &DirectoryPath);
+	void ImportLandscape();
 
 private:
 	void RegisterMenus();
@@ -79,19 +79,18 @@ private:
 	/** Update the status message in the UI */
 	void UpdateStatusMessage(const FString &Message, bool bIsError = false);
 
-	/** Function to create layer info corresponding to a texture */
-	FName CreateLayerInfo(const FString &TextureFileName, const FString &DestinationDirectory, UObject *ImportedTexture);
+	/** Function to import and create landscape layers */
+	void ImportLayers(TArray<FString> &TexturePaths);
 
-	/** Function to import/find asset, returns the imported/found asset */
-	UTexture2D *ImportTexture(const FString &TexturePath, const FString &DestinationDirectory);
-
-	/** Test function for asset import */
-	TArray<UStaticMesh*> ImportModels(TArray<FString> &ModelPaths);
+	/** Test function for asset import using Interchange */
+	TArray<UStaticMesh *> ImportModels(TArray<FString> &ModelPaths, UMaterial *ModelMaterial);
 
 	/** Function to create proxy data for landscape import */
 	TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> CreateProxyData(const int TileRow, const int TileCol, const uint8 CompPerProxy);
 
-	void CreateLandscapeMaterial(const FString &BaseDirectoryPath, ALandscape *Landscape);
+	UMaterial *CreateModelMaterial();
+
+	void CreateLandscapeMaterial(ALandscape *Landscape);
 
 	template <typename NodeType>
 	NodeType *CreateNode(NodeType *NewObject, int32 EditorX, int32 EditorY, UMaterial *LandscapeMaterial)
@@ -109,6 +108,8 @@ private:
 	TSharedPtr<class STextBlock> StatusMessageWidget;
 
 	TArray<TArray<Tile>> TileGrid;
+
+	FString DirectoryPath;
 
 	/** Key-value store for data and metadata of landscape layers */
 	TMap<FName, LayerMetadata> LayerMetadataMap;
