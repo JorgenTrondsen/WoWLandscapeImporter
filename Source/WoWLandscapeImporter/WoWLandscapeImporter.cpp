@@ -49,8 +49,12 @@
 #include "Materials/MaterialExpressionGetMaterialAttributes.h"
 #include "Materials/MaterialExpressionRuntimeVirtualTextureOutput.h"
 #include "Materials/MaterialExpressionRuntimeVirtualTextureSample.h"
-#include "Materials/MaterialExpressionSetMaterialAttributes.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
+#include "Materials/MaterialExpressionTextureSampleParameter2DArray.h"
+#include "Materials/MaterialExpressionLandscapeVisibilityMask.h"
+#include "Materials/MaterialExpressionAppendVector.h"
+#include "Materials/MaterialExpressionStaticSwitchParameter.h"
+#include "Materials/MaterialExpressionOneMinus.h"
 #include "MaterialDomain.h"
 #include "Materials/MaterialExpressionLandscapeLayerCoords.h"
 #include "MaterialEditorUtilities.h"
@@ -69,6 +73,7 @@
 #include "InterchangeGenericMeshPipeline.h"
 #include "InterchangeGenericMaterialPipeline.h"
 #include "InterchangeGenericTexturePipeline.h"
+#include "PhysicsEngine/BodySetup.h"
 
 static const FName WoWLandscapeImporterTabName("WoWLandscapeImporter");
 
@@ -289,27 +294,36 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 		Landscape->NumSubsections = 2;
 
 		ULandscapeInfo *LandscapeInfo = Landscape->CreateLandscapeInfo();
-
 		{
-			FScopedSlowTask SlowTask(HeightmapFiles.Num(), LOCTEXT("ImportingWoWLandscape", "Importing WoW Landscape..."));
+			uint8 CompPerProxy = 1;
+			FScopedSlowTask SlowTask((TileRows / CompPerProxy) * (TileColumns / CompPerProxy), LOCTEXT("ImportingWoWLandscape", "Importing WoW Landscape..."));
 			SlowTask.MakeDialog();
 
-			uint8 CompPerProxy = 1;
 			for (int TileRow = 0; TileRow < TileRows; TileRow += CompPerProxy)
 			{
 				for (int TileCol = 0; TileCol < TileColumns; TileCol += CompPerProxy)
 				{
-					if (TileGrid[TileRow][TileCol].HeightmapData.Num() == 0)
-						continue;
-
 					// Update the slow task dialog
-					SlowTask.EnterProgressFrame(CompPerProxy * CompPerProxy, FText::Format(LOCTEXT("ImportingProxy", "Importing Proxy at (Row {1}), (Column {0})"), TileRow, TileCol));
+					SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("ImportingProxy", "Importing Proxy at (Row {1}), (Column {0})"), TileGrid[TileRow][TileCol].Row, TileGrid[TileRow][TileCol].Column));
+
+					Tile CurrentTile = TileGrid[TileRow][TileCol];
+					uint8 Offset = 0;
+					if (CurrentTile.HeightmapData.Num() == 0)
+					{
+						uint8 RowOffset = FMath::Min(TileRow + (CompPerProxy - 1), TileRows - 1);
+						uint8 ColumnOffset = FMath::Min(TileCol + (CompPerProxy - 1), TileColumns - 1);
+						if (TileGrid[RowOffset][ColumnOffset].HeightmapData.Num() == 0 || CompPerProxy == 1)
+							continue;
+
+						CurrentTile = TileGrid[RowOffset][ColumnOffset];
+						Offset = (CompPerProxy - 1);
+					}
 
 					TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> ProxyData = this->CreateProxyData(TileRow, TileCol, CompPerProxy);
 
 					// Create a LandscapeStreamingProxy actor for the current tiles
 					ALandscapeStreamingProxy *StreamingProxy = GEditor->GetEditorWorldContext().World()->SpawnActor<ALandscapeStreamingProxy>();
-					StreamingProxy->SetActorLabel(FString::Printf(TEXT("%d_%d_Proxy"), TileCol, TileRow));
+					StreamingProxy->SetActorLabel(FString::Printf(TEXT("%d_%d_Proxy"), CurrentTile.Column - Offset, CurrentTile.Row - Offset));
 					StreamingProxy->SetActorScale3D(Landscape->GetActorScale3D());
 					StreamingProxy->SetActorLocation(Landscape->GetActorLocation());
 
@@ -321,8 +335,8 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 					TMap<FGuid, TArray<FLandscapeImportLayerInfo>> MaterialLayerDataPerLayer;
 					MaterialLayerDataPerLayer.Add(FGuid(), MoveTemp(ProxyData.Get<1>()));
 
-					uint32 MinX = TileGrid[TileRow][TileCol].Column * (254 * CompPerProxy);
-					uint32 MinY = TileGrid[TileRow][TileCol].Row * (254 * CompPerProxy);
+					uint32 MinX = (CurrentTile.Column - Offset) * 254;
+					uint32 MinY = (CurrentTile.Row - Offset) * 254;
 					uint32 MaxX = MinX + (254 * CompPerProxy);
 					uint32 MaxY = MinY + (254 * CompPerProxy);
 					StreamingProxy->Import(FGuid::NewGuid(), MinX, MinY, MaxX, MaxY, 2, 127, HeightDataPerLayer, nullptr, MaterialLayerDataPerLayer, ELandscapeImportAlphamapType::Additive);
@@ -358,16 +372,37 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 					ActorData Actor;
 					Actor.ModelPath = FPaths::ConvertRelativePathToFull(DirectoryPath, CSVFields[0]);
 
-					// Extract position data and convert to centimeters(from yards)
-					Actor.Position = FVector(
-						FCString::Atod(*CSVFields[1]) * 91.44f,
-						FCString::Atod(*CSVFields[3]) * 91.44f,
-						FCString::Atod(*CSVFields[2]) * 91.44f + SeaLevelOffset);
-					// Extract rotation data and convert to Unreal's coordinate system
-					Actor.Rotation = FRotator(
-						-FCString::Atod(*CSVFields[4]),
-						90 - FCString::Atod(*CSVFields[5]),
-						FCString::Atod(*CSVFields[6]));
+					if (CSVFields[10] == TEXT("gobj"))
+					{
+						// Game object has data relative to the center of the map, so we need to offset by 17066.66
+						Actor.Position = FVector(
+							(17066.66f - FCString::Atod(*CSVFields[2])) * 91.44f,
+							(17066.66f - FCString::Atod(*CSVFields[1])) * 91.44f,
+							FCString::Atod(*CSVFields[3]) * 91.44f + SeaLevelOffset);
+						// Create quaternion from game object rotation data
+						FQuat GOBJQuat(
+							-FCString::Atod(*CSVFields[7]), // X
+							FCString::Atod(*CSVFields[6]),	// Y
+							-FCString::Atod(*CSVFields[5]), // Z
+							FCString::Atod(*CSVFields[4])	// W
+						);
+						Actor.Rotation = GOBJQuat.Rotator();
+						Actor.Rotation.Yaw = Actor.Rotation.Yaw - 90;
+						Actor.Rotation.Roll = Actor.Rotation.Roll - 180;
+					}
+					else
+					{
+						// Extract position data and convert to centimeters(from yards)
+						Actor.Position = FVector(
+							FCString::Atod(*CSVFields[1]) * 91.44f,
+							FCString::Atod(*CSVFields[3]) * 91.44f,
+							FCString::Atod(*CSVFields[2]) * 91.44f + SeaLevelOffset);
+						// Extract rotation data and convert to Unreal's coordinate system
+						Actor.Rotation = FRotator(
+							-FCString::Atod(*CSVFields[4]),
+							90 - FCString::Atod(*CSVFields[5]),
+							FCString::Atod(*CSVFields[6]));
+					}
 
 					Actor.Scale = FCString::Atod(*CSVFields[8]);
 
@@ -581,8 +616,21 @@ TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> 
 
 			for (UObject *ImportedObject : ImportedObjects)
 			{
+				if (ImportedObject->GetName().Contains(TEXT("_lod")))
+					continue;
+
 				if (UStaticMesh *StaticMesh = Cast<UStaticMesh>(ImportedObject))
+				{
+					StaticMesh->SetLODGroup(FName("LevelArchitecture"), false);
+					StaticMesh->GetBodySetup()->CollisionTraceFlag = ECollisionTraceFlag::CTF_UseComplexAsSimple;
+					StaticMesh->LODForCollision = 2;
+
+					// Mark the asset as modified and save changes
+					StaticMesh->MarkPackageDirty();
+					StaticMesh->PostEditChange();
+
 					ImportedModels.Add(StaticMesh);
+				}
 
 				if (UTexture2D *Texture = Cast<UTexture2D>(ImportedObject))
 					ImportedTextures.Add(Texture);
@@ -721,20 +769,39 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial()
 	// Load the asset and perform all modifications
 	const FString MaterialPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *MaterialName);
 	UMaterial *ModelMaterial = static_cast<UMaterial *>(UEditorAssetLibrary::LoadAsset(MaterialPackagePath));
-
-	// Create texture sample parameter node
-	UMaterialExpressionTextureSampleParameter2D *TextureSample = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -400, 0, ModelMaterial);
-	TextureSample->ParameterName = FName("ModelTexture");
 	ModelMaterial->BlendMode = BLEND_Masked;
-	ModelMaterial->TwoSided = 1;
-	// set the value of
+	ModelMaterial->OpacityMaskClipValue = 0.5f;
 
-	// Connect RGB channel of texture sample node to base color
+	// Create texture sample parameter node and connect to base color
+	UMaterialExpressionTextureSampleParameter2D *TextureSample = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -800, 0, ModelMaterial);
+	TextureSample->ParameterName = FName("ModelTexture");
 	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_BaseColor)->Expression = TextureSample;
-
-	// Connect alpha channel of texture sample node to opacity
 	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_OpacityMask)->Expression = TextureSample;
-	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_OpacityMask)->OutputIndex = 4; // Alpha channel
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_OpacityMask)->OutputIndex = 4;
+
+	// Create metallic switch parameter and connect to metallic attribute
+	UMaterialExpressionConstant *ZeroConstant = CreateNode(NewObject<UMaterialExpressionConstant>(ModelMaterial), -800, 250, ModelMaterial);
+	ZeroConstant->R = 0.0f;
+	UMaterialExpressionStaticSwitchParameter *MetallicSwitch = CreateNode(NewObject<UMaterialExpressionStaticSwitchParameter>(ModelMaterial), -400, 50, ModelMaterial);
+	MetallicSwitch->ParameterName = FName("MetallicSwitch");
+	MetallicSwitch->DefaultValue = false;
+	UMaterialExpressionOneMinus *OneMinus = CreateNode(NewObject<UMaterialExpressionOneMinus>(ModelMaterial), -480, 65, ModelMaterial);
+	OneMinus->Input.Expression = TextureSample;
+	OneMinus->Input.OutputIndex = 4;
+	MetallicSwitch->A.Expression = OneMinus;
+	MetallicSwitch->A.OutputIndex = 4;
+	MetallicSwitch->B.Expression = ZeroConstant;
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_Metallic)->Expression = MetallicSwitch;
+
+	// Create scalar parameters and connect to corresponding attributes
+	UMaterialExpressionScalarParameter *SpecularParameter = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -800, 350, ModelMaterial);
+	SpecularParameter->ParameterName = FName("Specular");
+	SpecularParameter->DefaultValue = 0.0f;
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_Specular)->Expression = SpecularParameter;
+	UMaterialExpressionScalarParameter *RoughnessParameter = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -800, 450, ModelMaterial);
+	RoughnessParameter->ParameterName = FName("Roughness");
+	RoughnessParameter->DefaultValue = 0.0f;
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_Roughness)->Expression = RoughnessParameter;
 
 	// Mark the material as dirty and update it
 	ModelMaterial->MarkPackageDirty();
@@ -745,8 +812,8 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial()
 
 void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 {
-	const FString MaterialDirectory = TEXT("/Game/Assets/WoWExport/Materials/");
 	const FString BaseName = FPaths::GetCleanFilename(DirectoryPath);
+	const FString MaterialDirectory = FString::Printf(TEXT("/Game/Assets/WoWExport/Materials/%s"), *BaseName);
 	IAssetTools &AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 
 	// Create the RVT asset
@@ -758,18 +825,33 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 	URuntimeVirtualTexture *RVTAsset = static_cast<URuntimeVirtualTexture *>(UEditorAssetLibrary::LoadAsset(RVTPackagePath));
 	Landscape->RuntimeVirtualTextures.Add(RVTAsset);
 
-	// Create the material asset
-	const FString MaterialName = FString::Printf(TEXT("M_Landscape_%s"), *BaseName);
+	// Create and load the material asset
+	const FString MaterialName = FString::Printf(TEXT("M_%s"), *BaseName);
 	const FString MaterialPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *MaterialName);
-	UMaterialFactoryNew *MaterialFactory = NewObject<UMaterialFactoryNew>();
-	AssetTools.CreateAsset(MaterialName, MaterialDirectory, UMaterial::StaticClass(), MaterialFactory);
-
-	// Load the asset and perform all modifications
+	AssetTools.CreateAsset(MaterialName, MaterialDirectory, UMaterial::StaticClass(), nullptr);
 	UMaterial *LandscapeMaterial = static_cast<UMaterial *>(UEditorAssetLibrary::LoadAsset(MaterialPackagePath));
 	LandscapeMaterial->bUseMaterialAttributes = true;
 
+	// Create and load 256x256 texture2darray asset
+	FString TextureArrayName = FString::Printf(TEXT("TEX_%s_Array_256"), *BaseName);
+	FString TextureArrayPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *TextureArrayName);
+	AssetTools.CreateAsset(TextureArrayName, MaterialDirectory, UTexture2DArray::StaticClass(), nullptr);
+	UTexture2DArray *TextureArray256Asset = static_cast<UTexture2DArray *>(UEditorAssetLibrary::LoadAsset(TextureArrayPackagePath));
+
+	// Create and load 512x512 texture2darray asset
+	TextureArrayName = FString::Printf(TEXT("TEX_%s_Array_512"), *BaseName);
+	TextureArrayPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *TextureArrayName);
+	AssetTools.CreateAsset(TextureArrayName, MaterialDirectory, UTexture2DArray::StaticClass(), nullptr);
+	UTexture2DArray *TextureArray512Asset = static_cast<UTexture2DArray *>(UEditorAssetLibrary::LoadAsset(TextureArrayPackagePath));
+
+	// Create and load 1024x1024 texture2darray asset
+	TextureArrayName = FString::Printf(TEXT("TEX_%s_Array_1024"), *BaseName);
+	TextureArrayPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *TextureArrayName);
+	AssetTools.CreateAsset(TextureArrayName, MaterialDirectory, UTexture2DArray::StaticClass(), nullptr);
+	UTexture2DArray *TextureArray1024Asset = static_cast<UTexture2DArray *>(UEditorAssetLibrary::LoadAsset(TextureArrayPackagePath));
+
 	// -- Calculate the UV mapping for the landscape --
-	int32 Section0 = -3800;
+	int32 Section0 = -4300;
 	UMaterialExpressionLandscapeLayerCoords *CoordsNode = CreateNode(NewObject<UMaterialExpressionLandscapeLayerCoords>(LandscapeMaterial), Section0, 0, LandscapeMaterial);
 
 	// Create Near and Far tiling size parameters
@@ -824,15 +906,15 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 	SubtractNode->A.Expression = MultiplyNode;
 	SubtractNode->B.Expression = BlendDistanceStart;
 
-	UMaterialExpressionSaturate *SaturateNode = CreateNode(NewObject<UMaterialExpressionSaturate>(LandscapeMaterial), Section0 + 975, 600, LandscapeMaterial);
+	UMaterialExpressionSaturate *SaturateNode = CreateNode(NewObject<UMaterialExpressionSaturate>(LandscapeMaterial), Section0 + 850, 600, LandscapeMaterial);
 	SaturateNode->Input.Expression = SubtractNode;
 
-	UMaterialExpressionNamedRerouteDeclaration *DepthFadeReroute = CreateNode(NewObject<UMaterialExpressionNamedRerouteDeclaration>(LandscapeMaterial), Section0 + 1100, 600, LandscapeMaterial);
+	UMaterialExpressionNamedRerouteDeclaration *DepthFadeReroute = CreateNode(NewObject<UMaterialExpressionNamedRerouteDeclaration>(LandscapeMaterial), Section0 + 1000, 600, LandscapeMaterial);
 	DepthFadeReroute->Name = FName("DepthFade");
 	DepthFadeReroute->NodeColor = FLinearColor::Green;
 	DepthFadeReroute->Input.Expression = SaturateNode;
 
-	int32 Section1 = -2500;
+	int32 Section1 = -2800;
 	UMaterialExpressionLandscapeLayerBlend *LayerBlendNode = CreateNode(NewObject<UMaterialExpressionLandscapeLayerBlend>(LandscapeMaterial), Section1 + 1400, 0, LandscapeMaterial);
 
 	// Find the 3PointLevels Material Function
@@ -866,53 +948,100 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 
 	// Loop through our stored layer data to create and connect texture samplers
 	int32 NodeOffsetY = 0;
+	int32 TextureArrayIndex256 = 0, TextureArrayIndex512 = 0, TextureArrayIndex1024 = 0;
 	for (auto const &[LayerName, LayerMetadata] : LayerMetadataMap)
 	{
+
 		UMaterialExpressionNamedRerouteUsage *NearRerouteUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1, NodeOffsetY, LandscapeMaterial);
 		NearRerouteUsage->Declaration = NearReroute;
-		UMaterialExpressionNamedRerouteUsage *FarRerouteUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1, NodeOffsetY + 300, LandscapeMaterial);
+		UMaterialExpressionNamedRerouteUsage *FarRerouteUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1, NodeOffsetY + 75, LandscapeMaterial);
 		FarRerouteUsage->Declaration = FarReroute;
-
-		UMaterialExpressionTextureSample *TextureSampleNear = CreateNode(NewObject<UMaterialExpressionTextureSample>(LandscapeMaterial), Section1 + 100, NodeOffsetY, LandscapeMaterial);
-		TextureSampleNear->Texture = LayerMetadata.LayerTexture.Get();
-		TextureSampleNear->Coordinates.Expression = NearRerouteUsage;
-		TextureSampleNear->SamplerSource = ESamplerSourceMode::SSM_Wrap_WorldGroupSettings;
-		UMaterialExpressionTextureSample *TextureSampleFar = CreateNode(NewObject<UMaterialExpressionTextureSample>(LandscapeMaterial), Section1 + 100, NodeOffsetY + 300, LandscapeMaterial);
-		TextureSampleFar->Texture = LayerMetadata.LayerTexture.Get();
-		TextureSampleFar->Coordinates.Expression = FarRerouteUsage;
-		TextureSampleFar->SamplerSource = ESamplerSourceMode::SSM_Wrap_WorldGroupSettings;
-
-		if (LayerMetadata.LayerTexture->CompressionSettings == TC_Normalmap)
-		{
-			TextureSampleNear->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Normal;
-			TextureSampleFar->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Normal;
-		}
-
-		UMaterialExpressionNamedRerouteUsage *DepthFadeRerouteUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1 + 500, NodeOffsetY + 200, LandscapeMaterial);
+		UMaterialExpressionNamedRerouteUsage *DepthFadeRerouteUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1, NodeOffsetY + 150, LandscapeMaterial);
 		DepthFadeRerouteUsage->Declaration = DepthFadeReroute;
 
-		UMaterialExpressionLinearInterpolate *LerpBaseColor = CreateNode(NewObject<UMaterialExpressionLinearInterpolate>(LandscapeMaterial), Section1 + 500, NodeOffsetY, LandscapeMaterial);
-		LerpBaseColor->A.Expression = TextureSampleNear;
-		LerpBaseColor->B.Expression = TextureSampleFar;
-		LerpBaseColor->Alpha.Expression = DepthFadeRerouteUsage;
-		UMaterialExpressionLinearInterpolate *LerpAlpha = CreateNode(NewObject<UMaterialExpressionLinearInterpolate>(LandscapeMaterial), Section1 + 500, NodeOffsetY + 300, LandscapeMaterial);
-		LerpAlpha->A.Expression = TextureSampleNear;
-		LerpAlpha->B.Expression = TextureSampleFar;
-		LerpAlpha->Alpha.Expression = DepthFadeRerouteUsage;
-		LerpAlpha->A.OutputIndex = 4;
-		LerpAlpha->B.OutputIndex = 4;
+		// Interpolate UV coordinates first, then sample texture once
+		UMaterialExpressionLinearInterpolate *LerpUV = CreateNode(NewObject<UMaterialExpressionLinearInterpolate>(LandscapeMaterial), Section1 + 150, NodeOffsetY, LandscapeMaterial);
+		LerpUV->A.Expression = NearRerouteUsage;
+		LerpUV->B.Expression = FarRerouteUsage;
+		LerpUV->Alpha.Expression = DepthFadeRerouteUsage;
+
+		UTexture2D *LayerTexture = LayerMetadata.LayerTexture.Get();
+		UMaterialExpressionTextureSampleParameter2DArray *TextureSampleArray = nullptr;
+		UMaterialExpressionTextureSample *TextureSample = nullptr;
+		bool bUseTextureArray = true;
+
+		if (LayerTexture->GetSizeX() == 256 || LayerTexture->GetSizeX() == 512 || LayerTexture->GetSizeX() == 1024)
+		{
+			// Create constant for texture array index
+			UMaterialExpressionConstant *ArrayIndexConstant = CreateNode(NewObject<UMaterialExpressionConstant>(LandscapeMaterial), Section1 + 200, NodeOffsetY + 100, LandscapeMaterial);
+
+			// Create append vector to combine UV coordinates with array index
+			UMaterialExpressionAppendVector *AppendUVIndex = CreateNode(NewObject<UMaterialExpressionAppendVector>(LandscapeMaterial), Section1 + 300, NodeOffsetY + 50, LandscapeMaterial);
+			AppendUVIndex->A.Expression = LerpUV;
+			AppendUVIndex->B.Expression = ArrayIndexConstant;
+
+			TextureSampleArray = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2DArray>(LandscapeMaterial), Section1 + 350, NodeOffsetY, LandscapeMaterial);
+			TextureSampleArray->SamplerSource = ESamplerSourceMode::SSM_Wrap_WorldGroupSettings;
+
+			// Connect the UV+index coordinates to the texture array sampler
+			TextureSampleArray->Coordinates.Expression = AppendUVIndex;
+
+			if (LayerTexture->CompressionSettings == TC_Normalmap)
+				TextureSampleArray->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Normal;
+
+			if (LayerTexture->GetSizeX() == 256)
+			{
+				TextureArray256Asset->SourceTextures.Add(LayerTexture);
+				TextureSampleArray->Texture = TextureArray256Asset;
+				TextureSampleArray->ParameterName = FName("TextureArray256");
+				ArrayIndexConstant->R = TextureArrayIndex256;
+				TextureArrayIndex256++;
+			}
+			else if (LayerTexture->GetSizeX() == 512)
+			{
+				TextureArray512Asset->SourceTextures.Add(LayerTexture);
+				TextureSampleArray->Texture = TextureArray512Asset;
+				TextureSampleArray->ParameterName = FName("TextureArray512");
+				ArrayIndexConstant->R = TextureArrayIndex512;
+				TextureArrayIndex512++;
+			}
+			else if (LayerTexture->GetSizeX() == 1024)
+			{
+				TextureArray1024Asset->SourceTextures.Add(LayerTexture);
+				TextureSampleArray->Texture = TextureArray1024Asset;
+				TextureSampleArray->ParameterName = FName("TextureArray1024");
+				ArrayIndexConstant->R = TextureArrayIndex1024;
+				TextureArrayIndex1024++;
+			}
+		}
+		else
+		{
+			bUseTextureArray = false;
+			TextureSample = CreateNode(NewObject<UMaterialExpressionTextureSample>(LandscapeMaterial), Section1 + 350, NodeOffsetY, LandscapeMaterial);
+			TextureSample->Texture = LayerTexture;
+			TextureSample->Coordinates.Expression = LerpUV;
+			TextureSample->SamplerSource = ESamplerSourceMode::SSM_Wrap_WorldGroupSettings;
+
+			if (LayerTexture->CompressionSettings == TC_Normalmap)
+				TextureSample->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Normal;
+		}
 
 		// Connect the output 0 of the texture sample to the MakeMaterialAttributes node
-		UMaterialExpressionMakeMaterialAttributes *MakeMaterialAttributesNode = CreateNode(NewObject<UMaterialExpressionMakeMaterialAttributes>(LandscapeMaterial), Section1 + 700, NodeOffsetY, LandscapeMaterial);
-		MakeMaterialAttributesNode->BaseColor.Expression = LerpBaseColor;
-		MakeMaterialAttributesNode->Specular.Expression = LerpAlpha;
+		UMaterialExpressionMakeMaterialAttributes *MakeMaterialAttributesNode = CreateNode(NewObject<UMaterialExpressionMakeMaterialAttributes>(LandscapeMaterial), Section1 + 650, NodeOffsetY, LandscapeMaterial);
+		MakeMaterialAttributesNode->BaseColor.Expression = bUseTextureArray ? TextureSampleArray : TextureSample;
+
+		// Create a constant node for Specular and connect it
+		UMaterialExpressionConstant *SpecularConstantNode = CreateNode(NewObject<UMaterialExpressionConstant>(LandscapeMaterial), Section1 + 400, NodeOffsetY + 250, LandscapeMaterial);
+		SpecularConstantNode->R = 0.0f;
+		MakeMaterialAttributesNode->Specular.Expression = SpecularConstantNode;
 
 		UMaterialExpressionMaterialFunctionCall *LevelsNode = CreateNode(NewObject<UMaterialExpressionMaterialFunctionCall>(LandscapeMaterial), Section1 + 1050, NodeOffsetY + 150, LandscapeMaterial);
 		LevelsNode->MaterialFunction = ThreePointLevelsFunc;
 		LevelsNode->UpdateFromFunctionResource();
 
 		// Connect the alpha channel of the texture to the 'Input' of the 3PointLevels function
-		LevelsNode->GetInput(0)->Expression = LerpAlpha;
+		LevelsNode->GetInput(0)->Expression = bUseTextureArray ? TextureSampleArray : TextureSample;
+		LevelsNode->GetInput(0)->OutputIndex = 4;
 
 		// Connect the black, gray, and white values to the 3PointLevels function
 		UMaterialExpressionNamedRerouteUsage *BlackValueUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1 + 900, NodeOffsetY + 250, LandscapeMaterial);
@@ -935,6 +1064,21 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 
 		NodeOffsetY += 600;
 	}
+
+	// Update the texture array asset after adding all source textures
+	TextureArray256Asset->UpdateSourceFromSourceTextures();
+	TextureArray256Asset->MipGenSettings = TMGS_FromTextureGroup;
+	TextureArray256Asset->MarkPackageDirty();
+	TextureArray256Asset->PostEditChange();
+	TextureArray512Asset->UpdateSourceFromSourceTextures();
+	TextureArray512Asset->MipGenSettings = TMGS_FromTextureGroup;
+	TextureArray512Asset->MarkPackageDirty();
+	TextureArray512Asset->PostEditChange();
+	TextureArray1024Asset->UpdateSourceFromSourceTextures();
+	TextureArray1024Asset->MipGenSettings = TMGS_FromTextureGroup;
+	TextureArray1024Asset->MarkPackageDirty();
+	TextureArray1024Asset->PostEditChange();
+
 	UMaterialExpressionGetMaterialAttributes *GetMaterialAttributesNode = CreateNode(NewObject<UMaterialExpressionGetMaterialAttributes>(LandscapeMaterial), Section1 + 1800, 300, LandscapeMaterial);
 	GetMaterialAttributesNode->AttributeGetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_BaseColor));
 	GetMaterialAttributesNode->AttributeGetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_Specular));
@@ -958,27 +1102,28 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 	RVTSampleNode->VirtualTexture = RVTAsset;
 	RVTSampleNode->MaterialType = ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular;
 
-	UMaterialExpressionSetMaterialAttributes *SetMaterialAttributesNode = CreateNode(NewObject<UMaterialExpressionSetMaterialAttributes>(LandscapeMaterial), Section1 + 2200, 0, LandscapeMaterial);
-	SetMaterialAttributesNode->AttributeSetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_BaseColor));
-	SetMaterialAttributesNode->AttributeSetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_Specular));
-	SetMaterialAttributesNode->AttributeSetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_Roughness));
-	SetMaterialAttributesNode->AttributeSetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_Normal));
-	SetMaterialAttributesNode->Inputs.SetNum(SetMaterialAttributesNode->AttributeSetTypes.Num() + 1);
-	for (int i = 0; i < SetMaterialAttributesNode->AttributeSetTypes.Num(); ++i)
-	{
-		SetMaterialAttributesNode->GetInput(i + 1)->Expression = RVTSampleNode;
-		SetMaterialAttributesNode->GetInput(i + 1)->OutputIndex = i;
-	}
+	UMaterialExpressionMakeMaterialAttributes *MakeMaterialAttributesNode = CreateNode(NewObject<UMaterialExpressionMakeMaterialAttributes>(LandscapeMaterial), Section1 + 2500, 0, LandscapeMaterial);
+	MakeMaterialAttributesNode->BaseColor.Expression = RVTSampleNode;
+	MakeMaterialAttributesNode->Specular.Expression = RVTSampleNode;
+	MakeMaterialAttributesNode->Specular.OutputIndex = 1;
+	MakeMaterialAttributesNode->Roughness.Expression = RVTSampleNode;
+	MakeMaterialAttributesNode->Roughness.OutputIndex = 2;
+	MakeMaterialAttributesNode->Normal.Expression = RVTSampleNode;
+	MakeMaterialAttributesNode->Normal.OutputIndex = 3;
+
+	// Create landscape visibility mask node and connect it to opacity mask on material attributes node
+	UMaterialExpressionLandscapeVisibilityMask *VisibilityMaskNode = CreateNode(NewObject<UMaterialExpressionLandscapeVisibilityMask>(LandscapeMaterial), Section1 + 2200, 150, LandscapeMaterial);
+	MakeMaterialAttributesNode->OpacityMask.Expression = VisibilityMaskNode;
 
 	// Connect the final material attributes to the material's output
-	LandscapeMaterial->GetExpressionInputForProperty(MP_MaterialAttributes)->Expression = SetMaterialAttributesNode;
+	LandscapeMaterial->GetExpressionInputForProperty(MP_MaterialAttributes)->Expression = MakeMaterialAttributesNode;
 
 	// Mark the package as needing to be saved and update the material
 	LandscapeMaterial->MarkPackageDirty();
 	LandscapeMaterial->PostEditChange();
 
 	// Create a landscape material instance and return it
-	const FString MaterialInstanceName = FString::Printf(TEXT("MI_Landscape_%s"), *BaseName);
+	const FString MaterialInstanceName = FString::Printf(TEXT("MI_%s"), *BaseName);
 	const FString MaterialInstancePackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *MaterialInstanceName);
 
 	// Create the material instance asset
@@ -991,8 +1136,6 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 
 	// Update and mark as dirty
 	MaterialInstance->MarkPackageDirty();
-
-	Landscape->LandscapeMaterial = MaterialInstance;
 }
 
 void FWoWLandscapeImporterModule::UpdateStatusMessage(const FString &Message, bool bIsError)

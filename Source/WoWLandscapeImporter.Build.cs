@@ -52,6 +52,7 @@ public class WoWLandscapeImporter : ModuleRules
 				"AssetRegistry",
 				"AssetTools",
 				"MaterialEditor",
+				"StaticMeshEditor",
 				"InterchangeEngine",
 				"InterchangeCore",
 				"InterchangePipelines",
