@@ -74,6 +74,7 @@
 #include "InterchangeGenericMaterialPipeline.h"
 #include "InterchangeGenericTexturePipeline.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "Widgets/Input/SSpinBox.h"
 
 static const FName WoWLandscapeImporterTabName("WoWLandscapeImporter");
 
@@ -82,7 +83,6 @@ static const FName WoWLandscapeImporterTabName("WoWLandscapeImporter");
 void FWoWLandscapeImporterModule::StartupModule()
 {
 	// This code will execute after your module is loaded into memory; the exact timing is specified in the .uplugin file per-module
-
 	FWoWLandscapeImporterStyle::Initialize();
 	FWoWLandscapeImporterStyle::ReloadTextures();
 
@@ -120,9 +120,77 @@ TSharedRef<SDockTab> FWoWLandscapeImporterModule::OnSpawnPluginTab(const FSpawnT
 {
 	return SNew(SDockTab)
 		.TabRole(ETabRole::NomadTab)
-			[SNew(SBox)
-				 .Padding(FMargin(10.0f))
-					 [SNew(SVerticalBox) + SVerticalBox::Slot().AutoHeight().Padding(0, 2)[SNew(STextBlock).Text(LOCTEXT("WoWLandscapeImporterTitle", "WoW Importer")).Font(FCoreStyle::GetDefaultFontStyle("Bold", 16)).Justification(ETextJustify::Center)] + SVerticalBox::Slot().AutoHeight().Padding(0, 3)[SNew(STextBlock).Text(LOCTEXT("ImportDescription", "Select directory:")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 12)).Justification(ETextJustify::Center)] + SVerticalBox::Slot().AutoHeight().Padding(0, 5)[SNew(SButton).Text(LOCTEXT("ImportButtonText", "Import")).HAlign(HAlign_Center).VAlign(VAlign_Center).OnClicked_Raw(this, &FWoWLandscapeImporterModule::OnImportButtonClicked).ContentPadding(FMargin(12, 6))] + SVerticalBox::Slot().AutoHeight().Padding(0, 10)[SAssignNew(StatusMessageWidget, STextBlock).Text(FText::GetEmpty()).Font(FCoreStyle::GetDefaultFontStyle("Regular", 12)).Justification(ETextJustify::Center).ColorAndOpacity(FSlateColor(FLinearColor::White))]]];
+		[
+			SNew(SBox)
+			.Padding(FMargin(10.0f))
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0, 2)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("WoWLandscapeImporterTitle", "WoW Importer"))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 16))
+					.Justification(ETextJustify::Center)
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0, 3)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("ImportDescription", "Select directory:"))
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+					.Justification(ETextJustify::Center)
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0, 5)
+				[
+					SNew(SButton)
+					.Text(LOCTEXT("ImportButtonText", "Import"))
+					.HAlign(HAlign_Center)
+					.VAlign(VAlign_Center)
+					.OnClicked_Raw(this, &FWoWLandscapeImporterModule::OnImportButtonClicked)
+					.ContentPadding(FMargin(12, 6))
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0, 10)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(0, 0, 10, 0)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("WPGridSizeLabel", "World Partition Grid Size:"))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SSpinBox<int32>)
+						.MinValue(1)
+						.MaxValue(10)
+						.Value_Lambda([this]() { return WPGridSize; })
+						.OnValueChanged_Lambda([this](int32 NewValue) { WPGridSize = NewValue; })
+						.MinDesiredWidth(60.0f)
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0, 10)
+				[
+					SAssignNew(StatusMessageWidget, STextBlock)
+					.Text(FText::GetEmpty())
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+					.Justification(ETextJustify::Center)
+					.ColorAndOpacity(FSlateColor(FLinearColor::White))
+				]
+			]
+		];
 }
 
 FReply FWoWLandscapeImporterModule::OnImportButtonClicked()
@@ -303,21 +371,21 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 
 		ULandscapeInfo *LandscapeInfo = Landscape->CreateLandscapeInfo();
 		{
-			int CompPerProxy = 2;
-			FScopedSlowTask SlowTask(TileRows * TileColumns, LOCTEXT("ImportingWoWLandscape", "Importing WoW Landscape..."));
+			int TotalProxies = (TileRows + WPGridSize - 1) / WPGridSize * (TileColumns + WPGridSize - 1) / WPGridSize;
+			FScopedSlowTask SlowTask(TotalProxies, LOCTEXT("ImportingWoWLandscape", "Importing WoW Landscape..."));
 			SlowTask.MakeDialog();
 
-			for (int Row = 0; Row < TileRows; Row += CompPerProxy)
+			for (int Row = 0; Row < TileRows; Row += WPGridSize)
 			{
-				for (int Column = 0; Column < TileColumns; Column += CompPerProxy)
+				for (int Column = 0; Column < TileColumns; Column += WPGridSize)
 				{
 					SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("ImportingProxy", "Importing Proxy at (Row {1}), (Column {0})"), Column, Row));
 
-					int RowOffset = FMath::Min(Row + (CompPerProxy - 1), TileRows - 1) - Row;
-					int ColumnOffset = FMath::Min(Column + (CompPerProxy - 1), TileColumns - 1) - Column;
+					int RowOffset = FMath::Min(Row + (WPGridSize - 1), TileRows - 1) - Row;
+					int ColumnOffset = FMath::Min(Column + (WPGridSize - 1), TileColumns - 1) - Column;
 					if (TileGrid[Row][Column].HeightmapData.Num() == 0)
 					{
-						if (TileGrid[Row + RowOffset][Column + ColumnOffset].HeightmapData.Num() == 0 || CompPerProxy == 1)
+						if (TileGrid[Row + RowOffset][Column + ColumnOffset].HeightmapData.Num() == 0 || WPGridSize == 1)
 							continue;
 					}
 
@@ -370,6 +438,7 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 
 					ActorData Actor;
 					Actor.ModelPath = FPaths::ConvertRelativePathToFull(DirectoryPath, CSVFields[0]);
+					Actor.Tile = CSVFile.Replace(TEXT("_ModelPlacementInformation.csv"), TEXT("")).Replace(TEXT("adt_"), TEXT(""));
 
 					if (CSVFields[10] == TEXT("gobj"))
 					{
@@ -468,7 +537,7 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 		for (const ActorData &Actor : ActorsArray)
 			ModelPaths.Add(Actor.ModelPath);
 
-		TArray<UStaticMesh *> ImportedModels = ImportModels(ModelPaths, ModelMaterial);
+		TArray<UStaticMesh*> ImportedModels = ImportModels(ModelPaths, ModelMaterial);
 
 		int Model = 0;
 		// Second pass: spawn static mesh actors for each model and set their properties
@@ -480,6 +549,7 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 			// Spawn static mesh actor
 			AStaticMeshActor *ModelActor = GEditor->GetEditorWorldContext().World()->SpawnActor<AStaticMeshActor>();
 			ModelActor->SetActorLabel(FPaths::GetBaseFilename(ActorsArray[Actor].ModelPath));
+			ModelActor->SetFolderPath(FName(ActorsArray[Actor].Tile));
 
 			ModelActor->GetStaticMeshComponent()->SetStaticMesh(ImportedModels[Model]);
 

@@ -41,6 +41,7 @@ struct LayerMetadata
 struct ActorData
 {
 	FString ModelPath;
+	FString Tile;
 	FVector Position;
 	FRotator Rotation;
 	double Scale;
@@ -82,7 +83,6 @@ private:
 	/** Function to import and create landscape layers */
 	void ImportLayers(TArray<FString> &TexturePaths);
 
-	/** Test function for asset import using Interchange */
 	TArray<UStaticMesh *> ImportModels(TArray<FString> &ModelPaths, UMaterial *ModelMaterial);
 
 	/** Function to create proxy data for landscape import */
@@ -106,6 +106,9 @@ private:
 
 	/** Status message widget reference */
 	TSharedPtr<class STextBlock> StatusMessageWidget;
+
+	/** Components per proxy setting */
+	int WPGridSize = 2;
 
 	TArray<TArray<Tile>> TileGrid;
 
