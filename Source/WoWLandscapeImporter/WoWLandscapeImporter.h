@@ -10,6 +10,7 @@
 class FToolBarBuilder;
 class FMenuBuilder;
 class ULandscapeLayerInfoObject;
+class ULandscapeGrassType;
 
 /** Struct to hold layer data within a chunk*/
 struct Chunk
@@ -36,6 +37,7 @@ struct LayerMetadata
 {
 	TObjectPtr<ULandscapeLayerInfoObject> LayerInfo;
 	TObjectPtr<UTexture2D> LayerTexture;
+	TObjectPtr<ULandscapeGrassType> FoliageAsset;
 };
 
 struct ActorData
@@ -81,14 +83,14 @@ private:
 	void UpdateStatusMessage(const FString &Message, bool bIsError = false);
 
 	/** Function to import and create landscape layers */
-	void ImportLayers(TArray<FString> &TexturePaths);
+	void ImportLayers(TMap<int, FString> &TexturePaths, TArray<FString> &FoliageFiles, TArray<FString> &FoliageJSONs);
 
 	TArray<UStaticMesh *> ImportModels(TArray<FString> &ModelPaths, UMaterial *ModelMaterial);
 
 	/** Function to create proxy data for landscape import */
 	TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> CreateProxyData(const int Row, const int Column, const int RowOffset, const int ColumnOffset);
 
-	UMaterial *CreateModelMaterial();
+	UMaterial *CreateModelMaterial(const FString MaterialName, bool isFoliage = false);
 
 	void CreateLandscapeMaterial(ALandscape *Landscape);
 
