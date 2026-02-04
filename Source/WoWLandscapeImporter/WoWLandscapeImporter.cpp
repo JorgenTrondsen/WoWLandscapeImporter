@@ -745,28 +745,34 @@ TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> 
 	ImportParams.bReplaceExisting = true;
 	ImportParams.OverridePipelines.Add(FSoftObjectPath(Pipeline));
 
-	TArray<UE::Interchange::FAssetImportResultRef> ImportResults;
+
+	TMap<UE::Interchange::FAssetImportResultRef, UE::Interchange::FAssetImportResultRef> ImportResultMap;
 	for (const FString &ModelPath : ModelPaths)
 	{
-		// Create source data for this file
+		// Import the source model
 		UInterchangeSourceData *SourceData = UInterchangeManager::CreateSourceData(ModelPath);
-
-		// Start async import
 		UE::Interchange::FAssetImportResultRef ImportResult = InterchangeManager.ImportAssetAsync(TEXT("/Game/Assets/WoWExport/Meshes/"), SourceData, ImportParams);
-		ImportResults.Add(ImportResult);
+		
+		// Import the corresponding collision model(if it exists)
+		UInterchangeSourceData *SourceDataCollision = UInterchangeManager::CreateSourceData(ModelPath.Replace(TEXT(".obj"), TEXT(".phys.obj")));
+		UE::Interchange::FAssetImportResultRef ImportResultCollision = InterchangeManager.ImportAssetAsync(TEXT("/Game/Assets/WoWExport/Meshes/"), SourceDataCollision, ImportParams);
+
+		ImportResultMap.Add(ImportResult, ImportResultCollision);
 	}
 
 	TArray<UStaticMesh *> ImportedModels;
 	TArray<UTexture2D *> ImportedTextures;
 	TArray<UMaterialInstance *> ImportedMaterials;
 	{
-		FScopedSlowTask SlowTask(ImportResults.Num(), LOCTEXT("ImportingWoWModels", "Importing WoW Models..."));
+		FScopedSlowTask SlowTask(ImportResultMap.Num(), LOCTEXT("ImportingWoWModels", "Importing WoW Models..."));
 		SlowTask.MakeDialog();
 
-		for (int32 i = 0; i < ImportResults.Num(); i++)
+		int ModelIndex = 0;
+		for (const TPair<UE::Interchange::FAssetImportResultRef, UE::Interchange::FAssetImportResultRef> &ImportPair : ImportResultMap)
 		{
-			SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("ImportingModel", "Importing Model: {0}"), i));
-			const UE::Interchange::FAssetImportResultRef &ImportResult = ImportResults[i];
+			SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("ImportingModel", "Importing Model: {0}"), ModelIndex++));
+			const UE::Interchange::FAssetImportResultRef &ImportResult = ImportPair.Key;
+			const UE::Interchange::FAssetImportResultRef &ImportResultPhys = ImportPair.Value;
 
 			// Wait for this import to complete
 			ImportResult->WaitUntilDone();
@@ -779,17 +785,21 @@ TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> 
 				if (ImportedObject->GetName().Contains(TEXT("_lod")))
 					continue;
 
-				if (UStaticMesh *StaticMesh = Cast<UStaticMesh>(ImportedObject))
+				if (UStaticMesh *Mesh = Cast<UStaticMesh>(ImportedObject))
 				{
-					StaticMesh->SetLODGroup(FName("LevelArchitecture"), false);
-					StaticMesh->GetBodySetup()->CollisionTraceFlag = ECollisionTraceFlag::CTF_UseComplexAsSimple;
-					StaticMesh->LODForCollision = 2;
+					// Check for corresponding collision mesh and assign it
+					ImportResultPhys->WaitUntilDone();
+					if (ImportResultPhys->GetImportedObjects().Num() > 0)
+						Mesh->ComplexCollisionMesh = Cast<UStaticMesh>(ImportResultPhys->GetImportedObjects()[0]);
 
+					Mesh->SetLODGroup(FName("LevelArchitecture"), false);
+					Mesh->GetBodySetup()->CollisionTraceFlag = ECollisionTraceFlag::CTF_UseComplexAsSimple;
+	
 					// Mark the asset as modified and save changes
-					StaticMesh->MarkPackageDirty();
-					StaticMesh->PostEditChange();
+					Mesh->MarkPackageDirty();
+					Mesh->PostEditChange();
 
-					ImportedModels.Add(StaticMesh);
+					ImportedModels.Add(Mesh);
 				}
 
 				if (UTexture2D *Texture = Cast<UTexture2D>(ImportedObject))
