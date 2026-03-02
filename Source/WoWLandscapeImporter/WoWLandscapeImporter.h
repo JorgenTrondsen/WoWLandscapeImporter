@@ -83,7 +83,7 @@ private:
 	void UpdateStatusMessage(const FString &Message, bool bIsError = false);
 
 	/** Function to import and create landscape layers */
-	void ImportLayers(TMap<int, FString> &TexturePaths, TArray<FString> &FoliageFiles, TArray<FString> &FoliageJSONs);
+	void ImportLayers(TMap<int, TPair<FString, int>> &TexturePaths, TArray<FString> &FoliageFiles, TArray<FString> &FoliageJSONs);
 
 	TArray<UStaticMesh *> ImportModels(TArray<FString> &ModelPaths, UMaterial *ModelMaterial);
 
@@ -110,7 +110,7 @@ private:
 	TSharedPtr<class STextBlock> StatusMessageWidget;
 
 	/** Components per proxy setting */
-	int WPGridSize = 2;
+	int WPGridSize = 1;
 
 	TArray<TArray<Tile>> TileGrid;
 

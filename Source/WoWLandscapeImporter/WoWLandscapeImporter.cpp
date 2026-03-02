@@ -88,6 +88,9 @@
 #include "InterchangeGenericTexturePipeline.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "Widgets/Input/SSpinBox.h"
+#include "VT/RuntimeVirtualTextureVolume.h"
+#include "Components/RuntimeVirtualTextureComponent.h"
+#include "Engine/World.h"
 
 static const FName WoWLandscapeImporterTabName("WoWLandscapeImporter");
 
@@ -301,7 +304,7 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 		for (int Row = 0; Row < TileRows; Row++)
 			TileGrid[Row].SetNum(TileColumns);
 
-		TMap<int, FString> TexturePaths;
+		TMap<int, TPair<FString, int>> TexturePaths;
 		// First pass: collect filedata and metadata
 		for (int i = 0; i < HeightmapFiles.Num(); i++)
 		{
@@ -363,7 +366,7 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 					{
 						TSharedPtr<FJsonObject> LayerObject = LayerValue->AsObject();
 						FString TexturePath = LayerObject->GetStringField(TEXT("file")).Replace(TEXT("\\"), TEXT("/"));
-						TexturePaths.Add(LayerObject->GetNumberField(TEXT("effectID")), TexturePath);
+						TexturePaths.FindOrAdd(LayerObject->GetNumberField(TEXT("effectID")), TPair<FString, int>(TexturePath, 0)).Value++;
 
 						int ChunkIndex = LayerObject->GetNumberField(TEXT("chunkIndex"));
 						NewTile.Chunks[ChunkIndex].Layers.Add(FName(FPaths::GetBaseFilename(TexturePath)));
@@ -582,7 +585,7 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 	}
 }
 
-void FWoWLandscapeImporterModule::ImportLayers(TMap<int, FString> &TexturePaths, TArray<FString> &FoliageFiles, TArray<FString> &FoliageJSONs)
+void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &TexturePaths, TArray<FString> &FoliageFiles, TArray<FString> &FoliageJSONs)
 {
 	UInterchangeManager &InterchangeManager = UInterchangeManager::GetInterchangeManager();
 
@@ -591,18 +594,32 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, FString> &TexturePaths,
 	ImportParams.bIsAutomated = true;
 	ImportParams.bReplaceExisting = true;
 
-	// Extract unique texture paths to avoid importing duplicates
-	TArray<FString> UniqueTexturePaths;
-	for (const TPair<int, FString> &TexturePathPair : TexturePaths)
-		UniqueTexturePaths.AddUnique(TexturePathPair.Value);
-
-	TArray<UE::Interchange::FAssetImportResultRef> ImportResults;
-
-	// First import all unique textures
-	for (const FString &TexturePath : UniqueTexturePaths)
+	// Find the Map Key with the highest count for each Texture Path
+	TMap<FString, int> BestKeys;
+	for (const auto &Elem : TexturePaths)
 	{
-		const FString DestinationDirectory = FString::Printf(TEXT("/Game/Assets/WoWExport/%s"), *FPaths::GetPath(TexturePath).Replace(TEXT("../"), TEXT("")));
-		UInterchangeSourceData *SourceData = UInterchangeManager::CreateSourceData(FPaths::ConvertRelativePathToFull(DirectoryPath, TexturePath.RightChop(3)));
+		int *BestKey = BestKeys.Find(Elem.Value.Key);
+		if (!BestKey || Elem.Value.Value > TexturePaths[*BestKey].Value)
+			BestKeys.Add(Elem.Value.Key, Elem.Key); // Add or overwrite with the new best
+	}
+
+	// Remove any entries that are not the chosen "best" key
+	for (auto It = TexturePaths.CreateIterator(); It; ++It)
+	{
+		if (BestKeys[It->Value.Key] != It->Key)
+		{
+			// Remove the foliage json file that corresponds to the removed effectID key.
+			FoliageJSONs.Remove(FString::Printf(TEXT("layerinfo%d.json"), It->Key));
+			It.RemoveCurrent(); // Safe to do while iterating
+		}
+	}
+
+	// Import textures
+	TArray<UE::Interchange::FAssetImportResultRef> ImportResults;
+	for (const auto& TexturePair : TexturePaths)
+	{
+		const FString DestinationDirectory = FString::Printf(TEXT("/Game/Assets/WoWExport/%s"), *FPaths::GetPath(TexturePair.Value.Key).Replace(TEXT("../"), TEXT("")));
+		UInterchangeSourceData *SourceData = UInterchangeManager::CreateSourceData(FPaths::ConvertRelativePathToFull(DirectoryPath, TexturePair.Value.Key.RightChop(3)));
 		UE::Interchange::FAssetImportResultRef ImportResult = InterchangeManager.ImportAssetAsync(DestinationDirectory, SourceData, ImportParams);
 		ImportResults.Add(ImportResult);
 	}
@@ -611,18 +628,19 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, FString> &TexturePaths,
 		FScopedSlowTask SlowTask(ImportResults.Num(), LOCTEXT("ImportingWoWLayers", "Importing WoW Layers..."));
 		SlowTask.MakeDialog();
 
-		for (int i = 0; i < ImportResults.Num(); i++)
+		int Index = 0;
+		for (const auto& TexturePair : TexturePaths)
 		{
-			SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("ImportingLayer", "Importing Layer: {0}"), i));
-			const UE::Interchange::FAssetImportResultRef &ImportResult = ImportResults[i];
+			SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("ImportingLayer", "Importing Layer: {0}"), Index));
+			const UE::Interchange::FAssetImportResultRef &ImportResult = ImportResults[Index];
 
 			// Wait for the import to complete
 			ImportResult->WaitUntilDone();
 
 			UObject *ImportedObject = ImportResult->GetImportedObjects()[0];
 
-			const FString DestinationDirectory = FString::Printf(TEXT("/Game/Assets/WoWExport/%s"), *FPaths::GetPath(UniqueTexturePaths[i]).Replace(TEXT("../"), TEXT("")));
-			FString TextureFileName = FPaths::GetBaseFilename(UniqueTexturePaths[i]);
+			const FString DestinationDirectory = FString::Printf(TEXT("/Game/Assets/WoWExport/%s"), *FPaths::GetPath(TexturePair.Value.Key).Replace(TEXT("../"), TEXT("")));
+			FString TextureFileName = FPaths::GetBaseFilename(TexturePair.Value.Key);
 			FString LayerInfoName = FString::Printf(TEXT("LI_%s"), *TextureFileName);
 
 			// Create the layer info object
@@ -635,6 +653,7 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, FString> &TexturePaths,
 
 			// Add to layer metadata map
 			LayerMetadataMap.Add(LayerInfo->LayerName, LayerMetadata{LayerInfo, static_cast<UTexture2D *>(ImportedObject)});
+			Index++;
 		}
 	}
 
@@ -657,7 +676,7 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, FString> &TexturePaths,
 				int EffectID = JsonObject->GetIntegerField(TEXT("ID"));
 				TArray<FString> FoliageNames;
 				const TSharedPtr<FJsonObject> DoodadModelIDsObject = JsonObject->GetObjectField(TEXT("DoodadModelIDs"));
-				
+
 				for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : DoodadModelIDsObject->Values)
 					FoliageNames.Add(Pair.Value->AsObject()->GetStringField(TEXT("fileName")).Replace(TEXT(".obj"), TEXT("")));
 
@@ -677,11 +696,11 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, FString> &TexturePaths,
 
 				if (FoliageMeshes.Num() > 0)
 				{
-					LayerMetadata *LayerMetaData = LayerMetadataMap.Find(FName(*FPaths::GetBaseFilename(TexturePaths[EffectID])));
-					
+					LayerMetadata *LayerMetaData = LayerMetadataMap.Find(FName(*FPaths::GetBaseFilename(TexturePaths[EffectID].Key)));
+
 					// Create landscape grass type asset for this layer
 					FString PackagePath = FPackageName::GetLongPackagePath(LayerMetaData->LayerInfo->GetOutermost()->GetName());
-					FString AssetName = "GT_" + FPaths::GetBaseFilename(TexturePaths[EffectID]);
+					FString AssetName = "GT_" + FPaths::GetBaseFilename(TexturePaths[EffectID].Key);
 
 					UPackage *GrassPackage = CreatePackage(*(PackagePath + TEXT("/") + AssetName));
 					ULandscapeGrassType *FoliageAsset = NewObject<ULandscapeGrassType>(GrassPackage, *AssetName, RF_Public | RF_Standalone);
@@ -752,7 +771,7 @@ TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> 
 		// Import the source model
 		UInterchangeSourceData *SourceData = UInterchangeManager::CreateSourceData(ModelPath);
 		UE::Interchange::FAssetImportResultRef ImportResult = InterchangeManager.ImportAssetAsync(TEXT("/Game/Assets/WoWExport/Meshes/"), SourceData, ImportParams);
-		
+
 		// Import the corresponding collision model(if it exists)
 		UInterchangeSourceData *SourceDataCollision = UInterchangeManager::CreateSourceData(ModelPath.Replace(TEXT(".obj"), TEXT(".phys.obj")));
 		UE::Interchange::FAssetImportResultRef ImportResultCollision = InterchangeManager.ImportAssetAsync(TEXT("/Game/Assets/WoWExport/Meshes/"), SourceDataCollision, ImportParams);
@@ -794,7 +813,7 @@ TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> 
 
 					Mesh->SetLODGroup(FName("LevelArchitecture"), false);
 					Mesh->GetBodySetup()->CollisionTraceFlag = ECollisionTraceFlag::CTF_UseComplexAsSimple;
-	
+
 					// Mark the asset as modified and save changes
 					Mesh->MarkPackageDirty();
 					Mesh->PostEditChange();
@@ -871,7 +890,7 @@ TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterM
 			int ChunkX = TileX >= 127 ? (TileX + 1) / 16 : TileX / 16;
 
 			Tile &CurrentTile = TileGrid[CurrentRow][CurrentColumn];
-			
+
 			int ProxyIndex = ProxyY * ProxyWidth + ProxyX;
 			int TileIndex = TileY * 255 + TileX;
 
@@ -880,10 +899,10 @@ TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterM
 				Heightmap[ProxyIndex] = 0;
 				continue;
 			}
-			
+
 			Heightmap[ProxyIndex] = CurrentTile.HeightmapData[TileIndex];
 			FColor PixelValue = TileGrid[CurrentRow][CurrentColumn].AlphamapData[TileIndex];
-			
+
 			int ChunkIndex = ChunkY * 16 + ChunkX;
 			// Calculate the weight for each layer based on the pixel data
 			for (int LayerIndex = 0; LayerIndex < CurrentTile.Chunks[ChunkIndex].Layers.Num(); LayerIndex++)
@@ -958,20 +977,20 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString Materi
 		ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_SubsurfaceColor)->Expression = TextureSample;
 
 		// Create PerInstanceFadeAmount node
-		UClass* PerInstanceFadeAmountClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.MaterialExpressionPerInstanceFadeAmount"));
-		UMaterialExpression* PerInstanceFadeAmount = CreateNode(Cast<UMaterialExpression>(NewObject<UObject>(ModelMaterial, PerInstanceFadeAmountClass)), -1050, 200, ModelMaterial);
+		UClass *PerInstanceFadeAmountClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.MaterialExpressionPerInstanceFadeAmount"));
+		UMaterialExpression *PerInstanceFadeAmount = CreateNode(Cast<UMaterialExpression>(NewObject<UObject>(ModelMaterial, PerInstanceFadeAmountClass)), -1050, 200, ModelMaterial);
 
 		// Create DitherTemporalAA node
-		UMaterialExpressionMaterialFunctionCall* DitherTemporalAA = CreateNode(NewObject<UMaterialExpressionMaterialFunctionCall>(ModelMaterial), -1050, 250, ModelMaterial);
+		UMaterialExpressionMaterialFunctionCall *DitherTemporalAA = CreateNode(NewObject<UMaterialExpressionMaterialFunctionCall>(ModelMaterial), -1050, 250, ModelMaterial);
 		UMaterialFunction *DitherFunction = LoadObject<UMaterialFunction>(nullptr, TEXT("/Engine/Functions/Engine_MaterialFunctions02/Utility/DitherTemporalAA"));
 		DitherTemporalAA->MaterialFunction = DitherFunction;
 		DitherTemporalAA->UpdateFromFunctionResource();
 		DitherTemporalAA->GetInput(0)->Expression = PerInstanceFadeAmount;
 
 		// Create Multiply node to combine DitherTemporalAA with texture alpha
-		UMaterialExpressionMultiply* OpacityMultiply = CreateNode(NewObject<UMaterialExpressionMultiply>(ModelMaterial), -400, 200, ModelMaterial);
+		UMaterialExpressionMultiply *OpacityMultiply = CreateNode(NewObject<UMaterialExpressionMultiply>(ModelMaterial), -400, 200, ModelMaterial);
 		OpacityMultiply->A.Expression = TextureSample;
-		OpacityMultiply->A.OutputIndex = 4; // Alpha channel
+		OpacityMultiply->A.OutputIndex = 4;
 		OpacityMultiply->B.Expression = DitherTemporalAA;
 
 		// Connect multiply output to opacity mask
@@ -982,23 +1001,22 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString Materi
 		UMaterialExpressionMaterialFunctionCall *GrassWindNode = CreateNode(NewObject<UMaterialExpressionMaterialFunctionCall>(ModelMaterial), -800, 650, ModelMaterial);
 		GrassWindNode->MaterialFunction = LoadObject<UMaterialFunction>(nullptr, TEXT("/Engine/Functions/Engine_MaterialFunctions01/WorldPositionOffset/SimpleGrassWind.SimpleGrassWind"));
 		GrassWindNode->UpdateFromFunctionResource();
-		
+
 		// Simple Grass Wind parameters
 		UMaterialExpressionScalarParameter *WindIntensityParam = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, 550, ModelMaterial);
 		WindIntensityParam->ParameterName = FName("WindIntensity");
-		WindIntensityParam->DefaultValue = 0.5f;
+		WindIntensityParam->DefaultValue = 0.8f;
 		UMaterialExpressionScalarParameter *WindWeightParam = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, 650, ModelMaterial);
 		WindWeightParam->ParameterName = FName("WindWeight");
-		WindWeightParam->DefaultValue = 0.5f;
+		WindWeightParam->DefaultValue = 0.3f;
 		UMaterialExpressionScalarParameter *WindSpeedParam = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, 750, ModelMaterial);
 		WindSpeedParam->ParameterName = FName("WindSpeed");
-		WindSpeedParam->DefaultValue = 0.5f;
+		WindSpeedParam->DefaultValue = 0.4f;
 
-		
 		GrassWindNode->GetInput(0)->Expression = WindIntensityParam;
 		GrassWindNode->GetInput(1)->Expression = WindWeightParam;
 		GrassWindNode->GetInput(2)->Expression = WindSpeedParam;
-		
+
 		// Rolling wind logic (Compact Custom Node)
 		UMaterialExpressionCustom *CustomWind = CreateNode(NewObject<UMaterialExpressionCustom>(ModelMaterial), -800, 950, ModelMaterial);
 		CustomWind->Code = TEXT("float Phase = (WorldPos.x + WorldPos.y) * Frequency + Time * Speed;\n"
@@ -1006,6 +1024,7 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString Materi
 		CustomWind->Description = TEXT("Rolling Waves");
 		CustomWind->Inputs.Empty();
 		GrassWindNode->GetInput(3)->Expression = CustomWind;
+		GrassWindNode->GetInput(3)->OutputIndex = 0;
 
 		auto AddInput = [&](const char *Name, UMaterialExpression *Expression)
 		{
@@ -1029,7 +1048,7 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString Materi
 
 		auto *Freq = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, 1300, ModelMaterial);
 		Freq->ParameterName = "WindWaveFrequency";
-		Freq->DefaultValue = 0.001f;
+		Freq->DefaultValue = 0.0005f;
 		AddInput("Frequency", Freq);
 
 		auto *Amount = CreateNode(NewObject<UMaterialExpressionVectorParameter>(ModelMaterial), -1100, 1400, ModelMaterial);
@@ -1039,7 +1058,7 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString Materi
 
 		auto *Scale = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, 1600, ModelMaterial);
 		Scale->ParameterName = "WindHeightScale";
-		Scale->DefaultValue = 0.01f;
+		Scale->DefaultValue = 0.03f;
 		AddInput("HeightScale", Scale);
 
 		UMaterialExpressionStaticSwitchParameter *WindSwitch = CreateNode(NewObject<UMaterialExpressionStaticSwitchParameter>(ModelMaterial), -450, 650, ModelMaterial);
@@ -1047,7 +1066,7 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString Materi
 		WindSwitch->DefaultValue = true;
 		WindSwitch->A.Expression = GrassWindNode;
 		WindSwitch->B.Expression = ZeroConstant;
-		
+
 		ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_WorldPositionOffset)->Expression = WindSwitch;
 	}
 
@@ -1094,6 +1113,23 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 	// Load the RVT asset
 	URuntimeVirtualTexture *RVTAsset = static_cast<URuntimeVirtualTexture *>(UEditorAssetLibrary::LoadAsset(RVTPackagePath));
 	Landscape->RuntimeVirtualTextures.Add(RVTAsset);
+
+	// Create the RVT volume actor for the landscape and set the RVT asset to its component
+	ARuntimeVirtualTextureVolume *RVTVolume = Landscape->GetWorld()->SpawnActor<ARuntimeVirtualTextureVolume>();
+	RVTVolume->SetActorLabel(FString::Printf(TEXT("RVT_Volume_%s"), *BaseName));
+	URuntimeVirtualTextureComponent *RVTComp = RVTVolume->GetComponentByClass<URuntimeVirtualTextureComponent>();
+	RVTComp->SetVirtualTexture(RVTAsset);
+
+	// Calculate the bounding box of the landscape by iterating through its proxies and set the RVT volume location and scale accordingly
+	FBox LandscapeBox(ForceInit);
+	ULandscapeInfo* LandscapeInfo = Landscape->GetLandscapeInfo();
+	LandscapeInfo->ForEachLandscapeProxy([&LandscapeBox](ALandscapeProxy* Proxy)
+	{
+		LandscapeBox += Proxy->GetComponentsBoundingBox(true);
+		return true;
+	});
+	RVTVolume->SetActorLocation(FVector(LandscapeBox.Min.X, LandscapeBox.Min.Y, LandscapeBox.Min.Z));
+	RVTVolume->SetActorScale3D(LandscapeBox.GetSize());
 
 	// Create and load the material asset
 	const FString MaterialName = FString::Printf(TEXT("M_%s"), *BaseName);
@@ -1424,12 +1460,14 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 	UMaterialInstanceConstantFactoryNew *MaterialInstanceFactory = NewObject<UMaterialInstanceConstantFactoryNew>();
 	AssetTools.CreateAsset(MaterialInstanceName, MaterialDirectory, UMaterialInstanceConstant::StaticClass(), MaterialInstanceFactory);
 
-	// Load and configure the material instance
+	// Load and assign the material instance to landscape
 	UMaterialInstanceConstant *MaterialInstance = static_cast<UMaterialInstanceConstant *>(UEditorAssetLibrary::LoadAsset(MaterialInstancePackagePath));
 	MaterialInstance->SetParentEditorOnly(LandscapeMaterial);
+	Landscape->LandscapeMaterial = MaterialInstance;
 
-	// Update and mark as dirty
-	MaterialInstance->MarkPackageDirty();
+	FProperty *MaterialProperty = FindFProperty<FProperty>(ALandscapeProxy::StaticClass(), FName("LandscapeMaterial"));
+	FPropertyChangedEvent MaterialPropertyChangedEvent(MaterialProperty);
+	Landscape->PostEditChangeProperty(MaterialPropertyChangedEvent);
 }
 
 void FWoWLandscapeImporterModule::UpdateStatusMessage(const FString &Message, bool bIsError)
