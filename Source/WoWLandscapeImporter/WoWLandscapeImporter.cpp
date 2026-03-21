@@ -254,6 +254,7 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 	IFileManager::Get().FindFiles(HeightmapFiles, *SearchPattern, true, false);
 	SearchPattern = FPaths::Combine(DirectoryPath, TEXT("alphamaps/*.png"));
 	IFileManager::Get().FindFiles(AlphamapPNGs, *SearchPattern, true, false);
+	AlphamapPNGs.RemoveAll([](const FString &File) { return File.Contains(TEXT("_1.png")); });		// Remove secondary alphamap pngs from the list, we'll handle them in pairs later
 	SearchPattern = FPaths::Combine(DirectoryPath, TEXT("alphamaps/*.json"));
 	IFileManager::Get().FindFiles(AlphamapJSONs, *SearchPattern, true, false);
 	SearchPattern = FPaths::Combine(DirectoryPath, TEXT("*.csv"));
@@ -305,7 +306,7 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 			TileGrid[Row].SetNum(TileColumns);
 
 		TMap<int, TPair<FString, int>> TexturePaths;
-		// First pass: collect filedata and metadata
+		// Collect filedata and metadata
 		for (int i = 0; i < HeightmapFiles.Num(); i++)
 		{
 			TArray<FString> NameParts;
@@ -315,7 +316,7 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 			NewTile.Column = FCString::Atoi(*NameParts[1]);
 			NewTile.Row = FCString::Atoi(*NameParts[2]);
 
-			// Collect heightmap data
+			// Collect heightmap PNG data
 			TArray<uint8> FileData;
 			FString HeightmapPath = FPaths::Combine(DirectoryPath, TEXT("heightmaps/"), HeightmapFiles[i]);
 			if (FFileHelper::LoadFileToArray(FileData, *HeightmapPath))
@@ -334,20 +335,24 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 				}
 			}
 
-			// Collect alphamap PNG data
-			FString AlphamapPath = FPaths::Combine(DirectoryPath, TEXT("alphamaps/"), AlphamapPNGs[i]);
-			if (FFileHelper::LoadFileToArray(FileData, *AlphamapPath))
+			// Collect alphamaps and their PNG data
+			for (int j = 0; j < 2; j++)
 			{
-				IImageWrapperModule &ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
-				TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
-
-				if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(FileData.GetData(), FileData.Num()))
+				FString FileName = (j == 0) ? AlphamapPNGs[i] : AlphamapPNGs[i].LeftChop(4) + TEXT("_1.png");
+				FString AlphamapPath = FPaths::Combine(DirectoryPath, TEXT("alphamaps/"), FileName);
+				if (FFileHelper::LoadFileToArray(FileData, *AlphamapPath))
 				{
-					TArray<uint8> RawData;
-					if (ImageWrapper->GetRaw(ERGBFormat::BGRA, 8, RawData) && RawData.Num() > 0)
+					IImageWrapperModule &ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+					TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+
+					if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(FileData.GetData(), FileData.Num()))
 					{
-						NewTile.AlphamapData.AddUninitialized(RawData.Num() / sizeof(FColor));
-						FMemory::Memcpy(NewTile.AlphamapData.GetData(), RawData.GetData(), RawData.Num());
+						TArray<uint8> RawData;
+						if (ImageWrapper->GetRaw(ERGBFormat::BGRA, 8, RawData) && RawData.Num() > 0)
+						{
+							NewTile.AlphamapPNGs[j].AddUninitialized(RawData.Num() / sizeof(FColor));
+							FMemory::Memcpy(NewTile.AlphamapPNGs[j].GetData(), RawData.GetData(), RawData.Num());
+						}
 					}
 				}
 			}
@@ -369,7 +374,11 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 						TexturePaths.FindOrAdd(LayerObject->GetNumberField(TEXT("effectID")), TPair<FString, int>(TexturePath, 0)).Value++;
 
 						int ChunkIndex = LayerObject->GetNumberField(TEXT("chunkIndex"));
-						NewTile.Chunks[ChunkIndex].Layers.Add(FName(FPaths::GetBaseFilename(TexturePath)));
+						Layer NewLayer;
+						NewLayer.LayerName = FName(FPaths::GetBaseFilename(TexturePath));
+						NewLayer.ImageIndex = LayerObject->GetIntegerField(TEXT("imageIndex"));
+						NewLayer.ChannelIndex = LayerObject->GetIntegerField(TEXT("channelIndex"));
+						NewTile.Chunks[ChunkIndex].Layers.Add(NewLayer);
 					}
 				}
 			}
@@ -700,7 +709,7 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &T
 					{
 						FGrassVariety Variety;
 						Variety.GrassMesh = Mesh;
-						Variety.GrassDensity = FPerPlatformFloat(400.0f);
+						Variety.GrassDensity = FPerPlatformFloat(200.0f);
 						Variety.ScaleX = FFloatInterval(160.0f, 160.0f);
 						Variety.StartCullDistance = FPerPlatformInt(34500);
 						Variety.EndCullDistance = FPerPlatformInt(35000);
@@ -819,13 +828,7 @@ TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> 
 	for (UMaterialInstance *Material : ImportedMaterials)
 	{
 		FString TextureName = FString("TEX") + Material->GetName().Mid(3);
-		UTexture2D **Texture = ImportedTextures.FindByPredicate([&TextureName](const UTexture2D *Tex)
-																{ return Tex->GetName() == TextureName; });
-
-		// Clamp X-axis tiling method
-		(*Texture)->AddressX = TextureAddress::TA_Clamp;
-		(*Texture)->MarkPackageDirty();
-		(*Texture)->PostEditChange();
+		UTexture2D **Texture = ImportedTextures.FindByPredicate([&TextureName](const UTexture2D *Tex) { return Tex->GetName() == TextureName; });
 
 		UMaterialInstanceConstant *MaterialInstance = Cast<UMaterialInstanceConstant>(Material);
 		UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MaterialInstance, FName("ModelTexture"), *Texture);
@@ -878,16 +881,17 @@ TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterM
 				Heightmap[ProxyIndex] = 0;
 				continue;
 			}
-
 			Heightmap[ProxyIndex] = CurrentTile.HeightmapData[TileIndex];
-			FColor PixelValue = TileGrid[CurrentRow][CurrentColumn].AlphamapData[TileIndex];
 
 			int ChunkIndex = ChunkY * 16 + ChunkX;
 			// Calculate the weight for each layer based on the pixel data
 			for (int LayerIndex = 0; LayerIndex < CurrentTile.Chunks[ChunkIndex].Layers.Num(); LayerIndex++)
 			{
-				LayerMetadata *LayerMetadata = LayerMetadataMap.Find(CurrentTile.Chunks[ChunkIndex].Layers[LayerIndex]);
-				FLandscapeImportLayerInfo &ImportLayerInfo = LayerInfoMap.FindOrAdd(CurrentTile.Chunks[ChunkIndex].Layers[LayerIndex]);
+				const Layer &CurrentLayer = CurrentTile.Chunks[ChunkIndex].Layers[LayerIndex];
+				FColor Pixel = TileGrid[CurrentRow][CurrentColumn].AlphamapPNGs[CurrentLayer.ImageIndex][TileIndex];
+
+				LayerMetadata *LayerMetadata = LayerMetadataMap.Find(CurrentLayer.LayerName);
+				FLandscapeImportLayerInfo &ImportLayerInfo = LayerInfoMap.FindOrAdd(CurrentLayer.LayerName);
 				if (ImportLayerInfo.LayerData.Num() == 0)
 				{
 					ImportLayerInfo.LayerData.SetNumZeroed(ProxyWidth * ProxyHeight);
@@ -895,23 +899,36 @@ TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterM
 					ImportLayerInfo.LayerName = LayerMetadata->LayerInfo->LayerName;
 				}
 
-				switch (LayerIndex)
+				if (CurrentLayer.ChannelIndex == -1) // Base Layer
 				{
-				case 0:
-					ImportLayerInfo.LayerData[ProxyIndex] = PixelValue.A - PixelValue.R - PixelValue.G - PixelValue.B;
-					break;
-
-				case 1:
-					ImportLayerInfo.LayerData[ProxyIndex] = PixelValue.R;
-					break;
-
-				case 2:
-					ImportLayerInfo.LayerData[ProxyIndex] = PixelValue.G;
-					break;
-
-				case 3:
-					ImportLayerInfo.LayerData[ProxyIndex] = PixelValue.B;
-					break;
+					int TotalWeight = 0;
+					for (int OtherLayerIndex = 0; OtherLayerIndex < CurrentTile.Chunks[ChunkIndex].Layers.Num(); OtherLayerIndex++)
+					{
+						const Layer &OtherLayer = CurrentTile.Chunks[ChunkIndex].Layers[OtherLayerIndex];
+						if (OtherLayer.ChannelIndex != -1)
+						{
+							int OtherPNG = OtherLayer.ImageIndex;
+							FColor OtherPixel = TileGrid[CurrentRow][CurrentColumn].AlphamapPNGs[OtherPNG][TileIndex];
+							switch (OtherLayer.ChannelIndex)
+							{
+							case 0: TotalWeight += OtherPixel.R; break;
+							case 1: TotalWeight += OtherPixel.G; break;
+							case 2: TotalWeight += OtherPixel.B; break;
+							case 3: TotalWeight += OtherPixel.A; break;
+							}
+						}
+					}
+					ImportLayerInfo.LayerData[ProxyIndex] = 255 - TotalWeight;
+				}
+				else
+				{
+					switch (CurrentLayer.ChannelIndex)
+					{
+					case 0: ImportLayerInfo.LayerData[ProxyIndex] = Pixel.R; break;
+					case 1: ImportLayerInfo.LayerData[ProxyIndex] = Pixel.G; break;
+					case 2: ImportLayerInfo.LayerData[ProxyIndex] = Pixel.B; break;
+					case 3: ImportLayerInfo.LayerData[ProxyIndex] = Pixel.A; break;
+					}
 				}
 			}
 			TileX++;
@@ -1122,7 +1139,7 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 	UMaterialExpressionScalarParameter *NearTilingSize = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial), Section0, 150, LandscapeMaterial);
 	NearTilingSize->ParameterName = FName("NearTilingSize");
 	NearTilingSize->Group = FName("DistanceBlend");
-	NearTilingSize->DefaultValue = 2.0f;
+	NearTilingSize->DefaultValue = 8.0f;
 	UMaterialExpressionScalarParameter *FarTilingSize = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial), Section0, 250, LandscapeMaterial);
 	FarTilingSize->ParameterName = FName("FarTilingSize");
 	FarTilingSize->Group = FName("DistanceBlend");

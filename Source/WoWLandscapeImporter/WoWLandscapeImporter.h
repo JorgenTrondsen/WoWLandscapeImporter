@@ -12,17 +12,24 @@ class FMenuBuilder;
 class ULandscapeLayerInfoObject;
 class ULandscapeGrassType;
 
+struct Layer
+{
+	FName LayerName;
+	int32 ImageIndex;
+	int32 ChannelIndex;
+};
+
 /** Struct to hold layer data within a chunk*/
 struct Chunk
 {
-	TArray<FName> Layers;
+	TArray<Layer> Layers;
 };
 
 /** Struct to represent a tile in the landscape grid */
 struct Tile
 {
 	TArray<uint16> HeightmapData;
-	TArray<FColor> AlphamapData;
+	TArray<TArray<FColor>> AlphamapPNGs;
 	TArray<Chunk> Chunks;
 
 	uint8 Column, Row;
@@ -30,6 +37,7 @@ struct Tile
 	Tile()
 	{
 		Chunks.SetNum(256);
+		AlphamapPNGs.SetNum(2);
 	}
 };
 
