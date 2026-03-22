@@ -96,7 +96,7 @@ private:
 	TArray<UStaticMesh *> ImportModels(TArray<FString> &ModelPaths, UMaterial *ModelMaterial);
 
 	/** Function to create proxy data for landscape import */
-	TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> CreateProxyData(const int Row, const int Column, const int RowOffset, const int ColumnOffset);
+	TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> CreateProxyData(const int Row, const int Column);
 
 	UMaterial *CreateModelMaterial(const FString MaterialName, bool isFoliage = false);
 

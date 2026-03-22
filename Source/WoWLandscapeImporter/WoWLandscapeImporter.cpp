@@ -389,37 +389,31 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 
 		ALandscape *Landscape = GEditor->GetEditorWorldContext().World()->SpawnActor<ALandscape>();
 		Landscape->SetActorLabel(*FPaths::GetCleanFilename(DirectoryPath));
-		Landscape->SetActorScale3D(FVector(192, 192, Zscale)); // X/Y scale is 192 = 48,768 cm ÷ 254 quads. Standard WoW ADT (map tile) is 533.333 yards (48,768 cm) wide.
+		Landscape->SetActorScale3D(FVector(191.247, 191.247, Zscale)); // X/Y scale is 191.247 = 48,768 cm ÷ 255 quads. Standard WoW ADT (map tile) is 533.333 yards (48,768 cm) wide.
 
 		FGuid LandscapeGuid = FGuid::NewGuid();
 		Landscape->SetLandscapeGuid(LandscapeGuid);
 
-		// Set landscape configuration parameters to match what we'll import
-		Landscape->ComponentSizeQuads = 254;
-		Landscape->SubsectionSizeQuads = 127;
+		// Heightmaps are 256x256, but each landscape component should be 510x510
+		Landscape->ComponentSizeQuads = 510;
+		Landscape->SubsectionSizeQuads = 255;
 		Landscape->NumSubsections = 2;
 
 		ULandscapeInfo *LandscapeInfo = Landscape->CreateLandscapeInfo();
 		{
-			int TotalProxies = (TileRows + WPGridSize - 1) / WPGridSize * (TileColumns + WPGridSize - 1) / WPGridSize;
-			FScopedSlowTask SlowTask(TotalProxies, LOCTEXT("ImportingWoWLandscape", "Importing WoW Landscape..."));
+			FScopedSlowTask SlowTask(TileRows * TileColumns, LOCTEXT("ImportingWoWLandscape", "Importing WoW Landscape..."));
 			SlowTask.MakeDialog();
 
-			for (int Row = 0; Row < TileRows; Row += WPGridSize)
+			for (int Row = 0; Row < TileRows; Row++)
 			{
-				for (int Column = 0; Column < TileColumns; Column += WPGridSize)
+				bool RowHasData = false;
+				for (int Column = 0; Column < TileColumns; Column++)
 				{
 					SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("ImportingProxy", "Importing Proxy at (Row {1}), (Column {0})"), Column, Row));
-
-					int RowOffset = FMath::Min(Row + (WPGridSize - 1), TileRows - 1) - Row;
-					int ColumnOffset = FMath::Min(Column + (WPGridSize - 1), TileColumns - 1) - Column;
 					if (TileGrid[Row][Column].HeightmapData.Num() == 0)
-					{
-						if (TileGrid[Row + RowOffset][Column + ColumnOffset].HeightmapData.Num() == 0 || WPGridSize == 1)
-							continue;
-					}
-
-					TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> ProxyData = CreateProxyData(Row, Column, RowOffset, ColumnOffset);
+						continue;
+					RowHasData = true;
+					TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> ProxyData = CreateProxyData(Row, Column);
 
 					// Create a LandscapeStreamingProxy actor for the current tiles
 					ALandscapeStreamingProxy *StreamingProxy = GEditor->GetEditorWorldContext().World()->SpawnActor<ALandscapeStreamingProxy>();
@@ -433,15 +427,19 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 					TMap<FGuid, TArray<FLandscapeImportLayerInfo>> MaterialLayerDataPerLayer;
 					MaterialLayerDataPerLayer.Add(FGuid(), MoveTemp(ProxyData.Get<1>()));
 
-					uint32 MinX = Column * 254;
-					uint32 MinY = Row * 254;
-					uint32 MaxX = MinX + (254 * (ColumnOffset + 1));
-					uint32 MaxY = MinY + (254 * (RowOffset + 1));
-					StreamingProxy->Import(FGuid::NewGuid(), MinX, MinY, MaxX, MaxY, 2, 127, HeightDataPerLayer, nullptr, MaterialLayerDataPerLayer, ELandscapeImportAlphamapType::Additive);
+					uint32 MinY = Row * 255;
+					uint32 MinX = Column * 255;
+					uint32 MaxY = MinY + 510;
+					uint32 MaxX = MinX + 510;
+					StreamingProxy->Import(FGuid::NewGuid(), MinX, MinY, MaxX, MaxY, 2, 255, HeightDataPerLayer, nullptr, MaterialLayerDataPerLayer, ELandscapeImportAlphamapType::Layered);
 
 					StreamingProxy->SetLandscapeGuid(LandscapeGuid);
 					LandscapeInfo->RegisterActor(StreamingProxy);
+
+					Column++;
 				}
+				if (RowHasData)
+					Row++;
 			}
 		}
 
@@ -472,10 +470,10 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 
 					if (CSVFields[10] == TEXT("gobj"))
 					{
-						// Game object has data relative to the center of the map, so we need to offset by 17066.66
+						// Game object has data relative to the center of the map, so we need to offset by 17066.66656f
 						Actor.Position = FVector(
-							(17066.66f - FCString::Atod(*CSVFields[2])) * 91.44f,
-							(17066.66f - FCString::Atod(*CSVFields[1])) * 91.44f,
+							(17066.66656f - FCString::Atod(*CSVFields[2])) * 91.44f,
+							(17066.66656f - FCString::Atod(*CSVFields[1])) * 91.44f,
 							FCString::Atod(*CSVFields[3]) * 91.44f + SeaLevelOffset);
 						// Create quaternion from game object rotation data
 						FQuat GOBJQuat(
@@ -840,11 +838,11 @@ TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> 
 	return ImportedModels;
 }
 
-TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterModule::CreateProxyData(const int StartRow, const int StartColumn, const int RowOffset, const int ColumnOffset)
+TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterModule::CreateProxyData(const int StartRow, const int StartColumn)
 {
 	// Height and width of proxy in vertices(pixels)
-	const int ProxyHeight = 254 * (RowOffset + 1) + 1;
-	const int ProxyWidth = 254 * (ColumnOffset + 1) + 1;
+	const int ProxyHeight = 511;
+	const int ProxyWidth = 511;
 	TArray<uint16> Heightmap;
 	Heightmap.SetNumZeroed(ProxyWidth * ProxyHeight);
 	TMap<FName, FLandscapeImportLayerInfo> LayerInfoMap;
@@ -853,36 +851,32 @@ TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterM
 	int TileY = 0;
 	for (int ProxyY = 0; ProxyY < ProxyHeight; ProxyY++)
 	{
-		if (TileY == 255)
+		if (TileY == 256)
 		{
 			CurrentRow++;
 			TileY = 1;													// We skip first row/column of subsequent tiles to avoid overlapping vertices(heightmaps share borders)
 		}
-		int ChunkY = TileY >= 127 ? (TileY + 1) / 16 : TileY / 16; 		// Downsampled alphamap has overlapping chunks in the middle, so we need to adjust the tile index accordingly
 
+		int ChunkY = TileY / 16; 		// All heightmaps/alphamaps are now 256x256, so we dont need to worry about the special case for the first 127 pixels and can just do an integer division to get the chunk index.
 		int CurrentColumn = StartColumn;
 		int TileX = 0;
 		for (int ProxyX = 0; ProxyX < ProxyWidth; ProxyX++)
 		{
-			if (TileX == 255)
+			if (TileX == 256)
 			{
 				CurrentColumn++;
 				TileX = 1;
 			}
-			int ChunkX = TileX >= 127 ? (TileX + 1) / 16 : TileX / 16;
-
-			Tile &CurrentTile = TileGrid[CurrentRow][CurrentColumn];
 
 			int ProxyIndex = ProxyY * ProxyWidth + ProxyX;
-			int TileIndex = TileY * 255 + TileX;
+			if (CurrentRow >= TileGrid.Num() || CurrentColumn >= TileGrid[0].Num() || TileGrid[CurrentRow][CurrentColumn].HeightmapData.Num() == 0)
+				continue; // No heightmap data for this tile, so we can just leave it as 0
 
-			if (CurrentTile.HeightmapData.Num() == 0)
-			{	// No heightmap data for this tile, set height to 0 and continue
-				Heightmap[ProxyIndex] = 0;
-				continue;
-			}
+			Tile &CurrentTile = TileGrid[CurrentRow][CurrentColumn];
+			int TileIndex = TileY * 256 + TileX;
 			Heightmap[ProxyIndex] = CurrentTile.HeightmapData[TileIndex];
 
+			int ChunkX = TileX / 16;
 			int ChunkIndex = ChunkY * 16 + ChunkX;
 			// Calculate the weight for each layer based on the pixel data
 			for (int LayerIndex = 0; LayerIndex < CurrentTile.Chunks[ChunkIndex].Layers.Num(); LayerIndex++)
@@ -1139,7 +1133,7 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 	UMaterialExpressionScalarParameter *NearTilingSize = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial), Section0, 150, LandscapeMaterial);
 	NearTilingSize->ParameterName = FName("NearTilingSize");
 	NearTilingSize->Group = FName("DistanceBlend");
-	NearTilingSize->DefaultValue = 8.0f;
+	NearTilingSize->DefaultValue = 5.0f;
 	UMaterialExpressionScalarParameter *FarTilingSize = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial), Section0, 250, LandscapeMaterial);
 	FarTilingSize->ParameterName = FName("FarTilingSize");
 	FarTilingSize->Group = FName("DistanceBlend");
