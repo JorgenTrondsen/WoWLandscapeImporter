@@ -52,6 +52,7 @@ struct ActorData
 {
 	FString ModelPath;
 	FString Tile;
+	FString ParentWMO;
 	FVector Position;
 	FRotator Rotation;
 	double Scale;

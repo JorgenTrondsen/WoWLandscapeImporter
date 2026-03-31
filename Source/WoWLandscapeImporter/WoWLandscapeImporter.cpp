@@ -389,7 +389,7 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 
 		ALandscape *Landscape = GEditor->GetEditorWorldContext().World()->SpawnActor<ALandscape>();
 		Landscape->SetActorLabel(*FPaths::GetCleanFilename(DirectoryPath));
-		Landscape->SetActorScale3D(FVector(191.247, 191.247, Zscale)); // X/Y scale is 191.247 = 48,768 cm ÷ 255 quads. Standard WoW ADT (map tile) is 533.333 yards (48,768 cm) wide.
+		Landscape->SetActorScale3D(FVector(48768.f / 255.f, 48768.f / 255.f, Zscale)); // X/Y scale is 48,768 cm ÷ 255 quads. Standard WoW ADT (map tile) is 533.333 yards (48,768 cm) wide.
 
 		FGuid LandscapeGuid = FGuid::NewGuid();
 		Landscape->SetLandscapeGuid(LandscapeGuid);
@@ -523,6 +523,8 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 
 								ActorData WMOActor;
 								WMOActor.ModelPath = FPaths::ConvertRelativePathToFull(WMOCSVPath, WMOCSVFields[0]);
+								WMOActor.Tile = Actor.Tile;
+								WMOActor.ParentWMO = FPaths::GetBaseFilename(Actor.ModelPath);
 
 								if (IFileManager::Get().FileSize(*WMOActor.ModelPath) < 1000)
 									continue; // Skip empty or invalid obj files
@@ -572,12 +574,15 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 		for (int Actor = 0; Actor < ActorsArray.Num(); Actor++)
 		{
 			if (Actor != 0 && ActorsArray[Actor].ModelPath != ActorsArray[Actor - 1].ModelPath)
-				Model++;
+			Model++;
 
 			// Spawn static mesh actor
 			AStaticMeshActor *ModelActor = GEditor->GetEditorWorldContext().World()->SpawnActor<AStaticMeshActor>();
 			ModelActor->SetActorLabel(FPaths::GetBaseFilename(ActorsArray[Actor].ModelPath));
-			ModelActor->SetFolderPath(FName(ActorsArray[Actor].Tile));
+
+			// Set folder path based on tile and parent WMO (if applicable)
+			FString FolderPath = ActorsArray[Actor].ParentWMO.IsEmpty() ? ActorsArray[Actor].Tile : FString::Printf(TEXT("%s/%s"), *ActorsArray[Actor].Tile, *ActorsArray[Actor].ParentWMO);
+			ModelActor->SetFolderPath(FName(*FolderPath));
 
 			ModelActor->GetStaticMeshComponent()->SetStaticMesh(ImportedModels[Model]);
 
@@ -870,7 +875,10 @@ TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterM
 
 			int ProxyIndex = ProxyY * ProxyWidth + ProxyX;
 			if (CurrentRow >= TileGrid.Num() || CurrentColumn >= TileGrid[0].Num() || TileGrid[CurrentRow][CurrentColumn].HeightmapData.Num() == 0)
+			{
+				TileX++;
 				continue; // No heightmap data for this tile, so we can just leave it as 0
+			}
 
 			Tile &CurrentTile = TileGrid[CurrentRow][CurrentColumn];
 			int TileIndex = TileY * 256 + TileX;
