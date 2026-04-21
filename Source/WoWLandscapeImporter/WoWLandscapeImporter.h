@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
+#include "IImageWrapper.h"
+#include "IImageWrapperModule.h"
 #include "Math/Color.h"
 #include "LandscapeProxy.h"
 
@@ -98,6 +100,30 @@ private:
 
 	/** Function to create proxy data for landscape import */
 	TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> CreateProxyData(const int Row, const int Column);
+
+	/** Helper functions*/
+	TSharedPtr<FJsonObject> LoadJsonObject(const FString& FilePath);
+	template <typename ArrayType>
+	bool LoadImageData(const FString& FilePath, ERGBFormat RGBFormat, int32 BitDepth, TArray<ArrayType>& OutRawData)
+	{
+		TArray<uint8> FileData;
+		if (FFileHelper::LoadFileToArray(FileData, *FilePath))
+		{
+			IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+			TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+			if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(FileData.GetData(), FileData.Num()))
+			{
+				TArray<uint8> RawData;
+				if (ImageWrapper->GetRaw(RGBFormat, BitDepth, RawData))
+				{
+					OutRawData.SetNumUninitialized(RawData.Num() / sizeof(ArrayType));
+					FMemory::Memcpy(OutRawData.GetData(), RawData.GetData(), RawData.Num());
+					return true;
+				}
+			}
+		}
+		return false;
+	}
 
 	UMaterial *CreateModelMaterial(const FString MaterialName, bool isFoliage = false);
 
