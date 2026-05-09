@@ -1,96 +1,89 @@
 #include "WoWLandscapeImporter.h"
-#include "Style/WoWLandscapeImporterStyle.h"
+#include "AssetImportTask.h"
+#include "AssetToolsModule.h"
+#include "Async/Async.h"
 #include "Commands/WoWLandscapeImporterCommands.h"
+#include "Components/RuntimeVirtualTextureComponent.h"
+#include "DesktopPlatformModule.h"
+#include "Dom/JsonObject.h"
+#include "EditorAssetLibrary.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/World.h"
+#include "Factories/MaterialFactoryNew.h"
+#include "Factories/MaterialInstanceConstantFactoryNew.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/PlatformFilemanager.h"
+#include "IAssetTools.h"
+#include "IDesktopPlatform.h"
+#include "InterchangeGenericAssetsPipeline.h"
+#include "InterchangeGenericMaterialPipeline.h"
+#include "InterchangeGenericMeshPipeline.h"
+#include "InterchangeGenericTexturePipeline.h"
+#include "InterchangeManager.h"
+#include "InterchangeSourceData.h"
+#include "Landscape.h"
+#include "LandscapeGrassType.h"
+#include "LandscapeInfo.h"
+#include "LandscapeLayerInfoObject.h"
+#include "LandscapeStreamingProxy.h"
+#include "MaterialDomain.h"
+#include "MaterialEditingLibrary.h"
+#include "MaterialEditorUtilities.h"
+#include "MaterialGraph/MaterialGraph.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialAttributeDefinitionMap.h"
+#include "Materials/MaterialExpressionAppendVector.h"
+#include "Materials/MaterialExpressionComponentMask.h"
+#include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionDivide.h"
+#include "Materials/MaterialExpressionGetMaterialAttributes.h"
+#include "Materials/MaterialExpressionLandscapeGrassOutput.h"
+#include "Materials/MaterialExpressionLandscapeLayerBlend.h"
+#include "Materials/MaterialExpressionLandscapeLayerCoords.h"
+#include "Materials/MaterialExpressionLandscapeLayerSample.h"
+#include "Materials/MaterialExpressionLandscapeVisibilityMask.h"
+#include "Materials/MaterialExpressionLinearInterpolate.h"
+#include "Materials/MaterialExpressionMakeMaterialAttributes.h"
+#include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionNamedReroute.h"
+#include "Materials/MaterialExpressionOneMinus.h"
+#include "Materials/MaterialExpressionPower.h"
+#include "Materials/MaterialExpressionRuntimeVirtualTextureSample.h"
+#include "Materials/MaterialExpressionSaturate.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionSmoothStep.h"
+#include "Materials/MaterialExpressionStaticSwitchParameter.h"
+#include "Materials/MaterialExpressionSubtract.h"
+#include "Materials/MaterialExpressionTextureCoordinate.h"
+#include "Materials/MaterialExpressionTextureSample.h"
+#include "Materials/MaterialExpressionTextureSampleParameter2D.h"
+#include "Materials/MaterialExpressionTextureSampleParameter2DArray.h"
+#include "Materials/MaterialExpressionTime.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionVertexColor.h"
+#include "Materials/MaterialExpressionViewProperty.h"
+#include "Materials/MaterialExpressionWorldPosition.h"
+#include "Materials/MaterialInstance.h"
+#include "Materials/MaterialInstanceConstant.h"
+#include "MeshDescription.h"
+#include "Misc/FileHelper.h"
+#include "PhysicsEngine/BodySetup.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "StaticMeshAttributes.h"
+#include "StaticMeshOperations.h"
+#include "Style/WoWLandscapeImporterStyle.h"
+#include "ToolMenus.h"
+#include "UObject/ConstructorHelpers.h"
+#include "VT/RuntimeVirtualTextureVolume.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SButton.h"
-#include "ToolMenus.h"
-#include "DesktopPlatformModule.h"
-#include "IDesktopPlatform.h"
-#include "Framework/Application/SlateApplication.h"
-#include "HAL/PlatformFilemanager.h"
-#include "Misc/FileHelper.h"
-#include "Dom/JsonObject.h"
-#include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonReader.h"
-#include "Landscape.h"
-#include "LandscapeStreamingProxy.h"
-#include "LandscapeProxy.h"
-#include "LandscapeInfo.h"
-#include "LandscapeGrassType.h"
-#include "ImageUtils.h"
-#include "Engine/StaticMeshActor.h"
-#include "IImageWrapperModule.h"
-#include "IImageWrapper.h"
-#include "EditorAssetLibrary.h"
-#include "AssetToolsModule.h"
-#include "IAssetTools.h"
-#include "LandscapeLayerInfoObject.h"
-#include "AssetRegistry/AssetRegistryModule.h"
-#include "Materials/Material.h"
-#include "Materials/MaterialInstance.h"
-#include "Materials/MaterialInstanceConstant.h"
-#include "Factories/MaterialInstanceConstantFactoryNew.h"
-#include "Materials/MaterialExpressionLandscapeLayerBlend.h"
-#include "Materials/MaterialExpressionLandscapeGrassOutput.h"
-#include "Materials/MaterialExpressionLandscapeLayerSample.h"
-#include "Materials/MaterialExpressionTextureSample.h"
-#include "Materials/MaterialExpressionMakeMaterialAttributes.h"
-#include "Materials/MaterialExpressionDivide.h"
-#include "Materials/MaterialExpressionNamedReroute.h"
-#include "Factories/MaterialFactoryNew.h"
-#include "Materials/MaterialExpressionConstant.h"
-#include "Materials/MaterialExpressionScalarParameter.h"
-#include "Materials/MaterialExpressionViewProperty.h"
-#include "Materials/MaterialExpressionPower.h"
-#include "Materials/MaterialExpressionMultiply.h"
-#include "Materials/MaterialExpressionSubtract.h"
-#include "Materials/MaterialExpressionSaturate.h"
-#include "Materials/MaterialExpressionLinearInterpolate.h"
-#include "Materials/MaterialExpressionGetMaterialAttributes.h"
-#include "Materials/MaterialExpressionRuntimeVirtualTextureOutput.h"
-#include "Materials/MaterialExpressionRuntimeVirtualTextureSample.h"
-#include "Materials/MaterialExpressionTextureSampleParameter2D.h"
-#include "Materials/MaterialExpressionTextureSampleParameter2DArray.h"
-#include "Materials/MaterialExpressionLandscapeVisibilityMask.h"
-#include "Materials/MaterialExpressionAppendVector.h"
-#include "Materials/MaterialExpressionStaticSwitchParameter.h"
-#include "Materials/MaterialExpressionOneMinus.h"
-#include "Materials/MaterialExpressionSmoothStep.h"
-#include "Materials/MaterialExpressionPerInstanceFadeAmount.h"
-#include "MaterialDomain.h"
-#include "Materials/MaterialExpressionLandscapeLayerCoords.h"
-#include "MaterialEditorUtilities.h"
-#include "MaterialGraph/MaterialGraph.h"
-#include "Materials/MaterialExpressionMaterialFunctionCall.h"
-#include "Materials/MaterialExpressionCustom.h"
-#include "Materials/MaterialExpressionWorldPosition.h"
-#include "Materials/MaterialExpressionTextureCoordinate.h"
-#include "Materials/MaterialExpressionComponentMask.h"
-#include "Materials/MaterialExpressionTime.h"
-#include "Materials/MaterialExpressionSine.h"
-#include "Materials/MaterialExpressionAdd.h"
-#include "Materials/MaterialExpressionVectorParameter.h"
-#include "Materials/MaterialAttributeDefinitionMap.h"
-#include "MaterialEditingLibrary.h"
-#include "UObject/ConstructorHelpers.h"
-#include "AssetImportTask.h"
-#include "Factories/FbxImportUI.h"
-#include "Factories/FbxStaticMeshImportData.h"
-#include "Factories/FbxTextureImportData.h"
-#include "InterchangeManager.h"
-#include "InterchangeSourceData.h"
-#include "InterchangeGenericAssetsPipeline.h"
-#include "InterchangeGenericMeshPipeline.h"
-#include "InterchangeGenericMaterialPipeline.h"
-#include "InterchangeGenericTexturePipeline.h"
-#include "PhysicsEngine/BodySetup.h"
-#include "Widgets/Input/SSpinBox.h"
-#include "VT/RuntimeVirtualTextureVolume.h"
-#include "Components/RuntimeVirtualTextureComponent.h"
-#include "Engine/World.h"
 
 static const FName WoWLandscapeImporterTabName("WoWLandscapeImporter");
 
@@ -136,77 +129,21 @@ TSharedRef<SDockTab> FWoWLandscapeImporterModule::OnSpawnPluginTab(const FSpawnT
 {
 	return SNew(SDockTab)
 		.TabRole(ETabRole::NomadTab)
-		[
-			SNew(SBox)
-			.Padding(FMargin(10.0f))
-			[
-				SNew(SVerticalBox)
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0, 2)
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("WoWLandscapeImporterTitle", "WoW Importer"))
-					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 16))
-					.Justification(ETextJustify::Center)
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0, 3)
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("ImportDescription", "Select directory:"))
-					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
-					.Justification(ETextJustify::Center)
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0, 5)
-				[
-					SNew(SButton)
-					.Text(LOCTEXT("ImportButtonText", "Import"))
-					.HAlign(HAlign_Center)
-					.VAlign(VAlign_Center)
-					.OnClicked_Raw(this, &FWoWLandscapeImporterModule::OnImportButtonClicked)
-					.ContentPadding(FMargin(12, 6))
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0, 10)
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
-					.Padding(0, 0, 10, 0)
-					[
-						SNew(STextBlock)
-						.Text(LOCTEXT("WPGridSizeLabel", "World Partition Grid Size:"))
-						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
-					]
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(SSpinBox<int32>)
-						.MinValue(1)
-						.MaxValue(10)
-						.Value_Lambda([this]() { return WPGridSize; })
-						.OnValueChanged_Lambda([this](int32 NewValue) { WPGridSize = NewValue; })
-						.MinDesiredWidth(60.0f)
-					]
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0, 10)
-				[
-					SAssignNew(StatusMessageWidget, STextBlock)
-					.Text(FText::GetEmpty())
-					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
-					.Justification(ETextJustify::Center)
-					.ColorAndOpacity(FSlateColor(FLinearColor::White))
-				]
-			]
-		];
+			[SNew(SBox)
+				 .Padding(FMargin(10.0f))
+					 [SNew(SVerticalBox) + SVerticalBox::Slot().AutoHeight().Padding(0, 2)[SNew(STextBlock).Text(LOCTEXT("WoWLandscapeImporterTitle", "WoW Importer")).Font(FCoreStyle::GetDefaultFontStyle("Bold", 16)).Justification(ETextJustify::Center)] + SVerticalBox::Slot().AutoHeight().Padding(0, 3)[SNew(STextBlock).Text(LOCTEXT("ImportDescription", "Select directory:")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 12)).Justification(ETextJustify::Center)] + SVerticalBox::Slot().AutoHeight().Padding(0, 5)[SNew(SButton).Text(LOCTEXT("ImportButtonText", "Import")).HAlign(HAlign_Center).VAlign(VAlign_Center).OnClicked_Raw(this, &FWoWLandscapeImporterModule::OnImportButtonClicked).ContentPadding(FMargin(12, 6))] + SVerticalBox::Slot().AutoHeight().Padding(0, 10)[SNew(SHorizontalBox) + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)[SNew(STextBlock).Text(LOCTEXT("WPGridSizeLabel", "World Partition Grid Size:")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))] + SHorizontalBox::Slot().AutoWidth()[SNew(SSpinBox<int32>).MinValue(1).MaxValue(10).Value_Lambda([this]()
+																																																																																																																																																																																																																																																																																				   { return WPGridSize; })
+																																																																																																																																																																																																																																																																						   .OnValueChanged_Lambda([this](int32 NewValue)
+																																																																																																																																																																																																																																																																												  { WPGridSize = NewValue; })
+																																																																																																																																																																																																																																																																						   .MinDesiredWidth(60.0f)]] +
+					  SVerticalBox::Slot()
+						  .AutoHeight()
+						  .Padding(0, 10)
+							  [SAssignNew(StatusMessageWidget, STextBlock)
+								   .Text(FText::GetEmpty())
+								   .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+								   .Justification(ETextJustify::Center)
+								   .ColorAndOpacity(FSlateColor(FLinearColor::White))]]];
 }
 
 FReply FWoWLandscapeImporterModule::OnImportButtonClicked()
@@ -221,6 +158,7 @@ FReply FWoWLandscapeImporterModule::OnImportButtonClicked()
 		const FString Title = TEXT("Select WoW Landscape Directory");
 		const FString DefaultPath = FPaths::Combine(FPlatformMisc::GetEnvironmentVariable(TEXT("USERPROFILE")), TEXT("wow.export\\maps"));
 
+		// Temporarily commented out ImportLandscape as we want to focus on implementing new logic specifically for CreateModelMaterial and ImportModels.
 		const bool bFolderSelected = DesktopPlatform->OpenDirectoryDialog(
 			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
 			Title,
@@ -235,6 +173,23 @@ FReply FWoWLandscapeImporterModule::OnImportButtonClicked()
 		{
 			UpdateStatusMessage(TEXT("Directory selection cancelled"), false);
 		}
+
+		// TArray<FString> SelectedFiles;
+		// const bool bOBJSelected = DesktopPlatform->OpenFileDialog(
+		// 	FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+		// 	TEXT("Select Foliage OBJ File"),
+		// 	DefaultPath,
+		// 	TEXT(""),
+		// 	TEXT("OBJ Files (*.obj)|*.obj"),
+		// 	EFileDialogFlags::Multiple,
+		// 	SelectedFiles);
+
+		// if (bOBJSelected && SelectedFiles.Num() > 0)
+		// {
+		// 	OBJFilePath = FPaths::GetPath(SelectedFiles[0]);
+		// 	UMaterial *ModelMaterial = CreateModelMaterial(TEXT("M_Model"));
+		// 	ImportModels(SelectedFiles, ModelMaterial);
+		// }
 	}
 
 	return FReply::Handled();
@@ -254,7 +209,8 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 	IFileManager::Get().FindFiles(HeightmapFiles, *SearchPattern, true, false);
 	SearchPattern = FPaths::Combine(DirectoryPath, TEXT("alphamaps/*.png"));
 	IFileManager::Get().FindFiles(AlphamapPNGs, *SearchPattern, true, false);
-	AlphamapPNGs.RemoveAll([](const FString &File) { return File.Contains(TEXT("_1.png")); });		// Remove secondary alphamap pngs from the list, we'll handle them in pairs later
+	AlphamapPNGs.RemoveAll([](const FString &File)
+						   { return File.Contains(TEXT("_1.png")); }); // Remove secondary alphamap pngs from the list, we'll handle them in pairs later
 	SearchPattern = FPaths::Combine(DirectoryPath, TEXT("alphamaps/*.json"));
 	IFileManager::Get().FindFiles(AlphamapJSONs, *SearchPattern, true, false);
 	SearchPattern = FPaths::Combine(DirectoryPath, TEXT("*.csv"));
@@ -341,7 +297,8 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 			TileGrid[NewTile.Row][NewTile.Column] = NewTile;
 		}
 
-		ImportLayers(TexturePaths, FoliageFiles, FoliageJSONs);
+		UMaterial *ModelMaterial = CreateModelMaterial(TEXT("M_Model"));
+		ImportLayers(TexturePaths, FoliageFiles, FoliageJSONs, ModelMaterial);
 
 		ALandscape *Landscape = GEditor->GetEditorWorldContext().World()->SpawnActor<ALandscape>();
 		Landscape->SetActorLabel(*FPaths::GetCleanFilename(DirectoryPath));
@@ -520,15 +477,14 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 		for (const ActorData &Actor : ActorsArray)
 			ModelPaths.Add(Actor.ModelPath);
 
-		UMaterial *ModelMaterial = CreateModelMaterial(TEXT("M_Model"));
-		TArray<UStaticMesh*> ImportedModels = ImportModels(ModelPaths, ModelMaterial);
+		TArray<UStaticMesh *> ImportedModels = ImportModels(ModelPaths, ModelMaterial);
 
 		int Model = 0;
 		// Second pass: spawn static mesh actors for each model and set their properties
 		for (int Actor = 0; Actor < ActorsArray.Num(); Actor++)
 		{
 			if (Actor != 0 && ActorsArray[Actor].ModelPath != ActorsArray[Actor - 1].ModelPath)
-			Model++;
+				Model++;
 
 			// Spawn static mesh actor
 			AStaticMeshActor *ModelActor = GEditor->GetEditorWorldContext().World()->SpawnActor<AStaticMeshActor>();
@@ -548,14 +504,8 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 	}
 }
 
-void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &TexturePaths, TArray<FString> &FoliageFiles, TArray<FString> &FoliageJSONs)
+void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &TexturePaths, TArray<FString> &FoliageFiles, TArray<FString> &FoliageJSONs, UMaterial *ModelMaterial)
 {
-	UInterchangeManager &InterchangeManager = UInterchangeManager::GetInterchangeManager();
-
-	FImportAssetParameters ImportParams;
-	ImportParams.bIsAutomated = true;
-	ImportParams.bReplaceExisting = true;
-
 	// Find the Map Key with the highest count for each Texture Path
 	TMap<FString, int> BestKeys;
 	for (const auto &Elem : TexturePaths)
@@ -577,8 +527,13 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &T
 	}
 
 	// Import textures
+	UInterchangeManager &InterchangeManager = UInterchangeManager::GetInterchangeManager();
+	FImportAssetParameters ImportParams;
+	ImportParams.bIsAutomated = true;
+	ImportParams.bReplaceExisting = true;
+
 	TArray<UE::Interchange::FAssetImportResultRef> ImportResults;
-	for (const auto& TexturePair : TexturePaths)
+	for (const auto &TexturePair : TexturePaths)
 	{
 		const FString DestinationDirectory = FString::Printf(TEXT("/Game/Assets/WoWExport/%s"), *FPaths::GetPath(TexturePair.Value.Key).Replace(TEXT("../"), TEXT("")));
 		UInterchangeSourceData *SourceData = UInterchangeManager::CreateSourceData(FPaths::ConvertRelativePathToFull(DirectoryPath, TexturePair.Value.Key.RightChop(3)));
@@ -591,7 +546,7 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &T
 		SlowTask.MakeDialog();
 
 		int Index = 0;
-		for (const auto& TexturePair : TexturePaths)
+		for (const auto &TexturePair : TexturePaths)
 		{
 			SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("ImportingLayer", "Importing Layer: {0}"), Index));
 			const UE::Interchange::FAssetImportResultRef &ImportResult = ImportResults[Index];
@@ -619,8 +574,7 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &T
 		}
 	}
 
-	UMaterial *FoliageMaterial = CreateModelMaterial(TEXT("M_Foliage"), true);
-	TArray<UStaticMesh *> ImportedFoliage = ImportModels(FoliageFiles, FoliageMaterial);
+	TArray<UStaticMesh *> ImportedFoliage = ImportModels(FoliageFiles, ModelMaterial, true);
 
 	// Map foliage mesh to corresponding layers in LayerMetadataMap
 	for (FString &FoliageJSON : FoliageJSONs)
@@ -631,11 +585,11 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &T
 		TArray<FString> FoliageNames;
 		const TSharedPtr<FJsonObject> DoodadModelIDsObject = JsonObject->GetObjectField(TEXT("DoodadModelIDs"));
 
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : DoodadModelIDsObject->Values)
+		for (const TPair<FString, TSharedPtr<FJsonValue>> &Pair : DoodadModelIDsObject->Values)
 			FoliageNames.Add(Pair.Value->AsObject()->GetStringField(TEXT("fileName")).Replace(TEXT(".obj"), TEXT("")));
 
 		// Find which imported foliage meshes correspond to these names
-		TArray<UStaticMesh*> FoliageMeshes;
+		TArray<UStaticMesh *> FoliageMeshes;
 		for (const FString &FoliageName : FoliageNames)
 		{
 			for (UStaticMesh *ImportedMesh : ImportedFoliage)
@@ -678,7 +632,7 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &T
 	}
 }
 
-TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> &ModelPaths, UMaterial *ModelMaterial)
+TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> &ModelPaths, UMaterial *ModelMaterial, bool isFoliage)
 {
 	// Remove duplicates from the asset paths
 	ModelPaths = TSet<FString>(MoveTemp(ModelPaths)).Array();
@@ -687,18 +641,11 @@ TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> 
 	Pipeline->bUseSourceNameForAsset = true;
 	Pipeline->ReimportStrategy = EReimportStrategyFlags::ApplyNoProperties;
 	Pipeline->ImportOffsetRotation = FRotator(0, 0, 90); // 90 degree rotation around Z-axis
-
+	Pipeline->MeshPipeline->bBuildReversedIndexBuffer = false;
 	Pipeline->MeshPipeline->bImportStaticMeshes = true;
-	Pipeline->MeshPipeline->bImportSkeletalMeshes = false;
 	Pipeline->MeshPipeline->bCombineStaticMeshes = true;
 	Pipeline->MeshPipeline->bImportCollision = false;
-	Pipeline->MeshPipeline->bBuildReversedIndexBuffer = false;
-	Pipeline->MeshPipeline->bBuildNanite = false;
-
-	Pipeline->MaterialPipeline->bImportMaterials = true;
-	Pipeline->MaterialPipeline->SearchLocation = EInterchangeMaterialSearchLocation::DoNotSearch;
-	Pipeline->MaterialPipeline->MaterialImport = EInterchangeMaterialImportOption::ImportAsMaterialInstances;
-	Pipeline->MaterialPipeline->ParentMaterial = ModelMaterial;
+	Pipeline->MaterialPipeline->bImportMaterials = false;
 
 	FImportAssetParameters ImportParams;
 	ImportParams.bIsAutomated = true;
@@ -706,7 +653,7 @@ TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> 
 	ImportParams.OverridePipelines.Add(FSoftObjectPath(Pipeline));
 
 	UInterchangeManager &InterchangeManager = UInterchangeManager::GetInterchangeManager();
-	TMap<UE::Interchange::FAssetImportResultRef, UE::Interchange::FAssetImportResultRef> ImportResultMap;
+	TArray<TTuple<FString, UE::Interchange::FAssetImportResultRef, UE::Interchange::FAssetImportResultRef>> ImportResults;
 	for (const FString &ModelPath : ModelPaths)
 	{
 		// Import the source model
@@ -717,72 +664,315 @@ TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> 
 		UInterchangeSourceData *SourceDataCollision = UInterchangeManager::CreateSourceData(ModelPath.Replace(TEXT(".obj"), TEXT(".phys.obj")));
 		UE::Interchange::FAssetImportResultRef ImportResultCollision = InterchangeManager.ImportAssetAsync(TEXT("/Game/Assets/WoWExport/Meshes/"), SourceDataCollision, ImportParams);
 
-		ImportResultMap.Add(ImportResult, ImportResultCollision);
+		ImportResults.Add(MakeTuple(ModelPath, ImportResult, ImportResultCollision));
 	}
 
 	TArray<UStaticMesh *> ImportedModels;
-	TArray<UTexture2D *> ImportedTextures;
-	TArray<UMaterialInstance *> ImportedMaterials;
+	TMap<FString, MtlData> NewMtls;
+	TMap<FString, UTexture2D *> ImportedTextures;
 	{
-		FScopedSlowTask SlowTask(ImportResultMap.Num(), LOCTEXT("ImportingWoWModels", "Importing WoW Models..."));
+		FScopedSlowTask SlowTask(ImportResults.Num(), LOCTEXT("ImportingModels", "Importing Models..."));
 		SlowTask.MakeDialog();
 
 		int ModelIndex = 0;
-		for (const TPair<UE::Interchange::FAssetImportResultRef, UE::Interchange::FAssetImportResultRef> &ImportPair : ImportResultMap)
+		for (const TTuple<FString, UE::Interchange::FAssetImportResultRef, UE::Interchange::FAssetImportResultRef> &ImportTuple : ImportResults)
 		{
 			SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("ImportingModel", "Importing Model: {0}"), ModelIndex++));
-			const UE::Interchange::FAssetImportResultRef &ImportResult = ImportPair.Key;
-			const UE::Interchange::FAssetImportResultRef &ImportResultPhys = ImportPair.Value;
+			const FString &ModelPath = ImportTuple.Get<0>();
+			const UE::Interchange::FAssetImportResultRef &ImportResult = ImportTuple.Get<1>();
+			const UE::Interchange::FAssetImportResultRef &ImportResultPhys = ImportTuple.Get<2>();
+
+			// Extract data from corresponding json file
+			const FString JsonPath = ModelPath.Replace(TEXT(".obj"), TEXT(".json"));
+			const TSharedPtr<FJsonObject> JsonObject = LoadJsonObject(JsonPath);
+			const JsonData Json = ParseModelJson(JsonObject);
 
 			ImportResult->WaitUntilDone();
 			const TArray<UObject *> &ImportedObjects = ImportResult->GetImportedObjects();
 
 			for (UObject *ImportedObject : ImportedObjects)
 			{
-				if (ImportedObject->GetName().Contains(TEXT("_lod")))
-					continue;
-
 				if (UStaticMesh *Mesh = Cast<UStaticMesh>(ImportedObject))
 				{
-					// Check for corresponding collision mesh and assign it
+					// Set Mesh properties and assign collision mesh (if it exists)
+					Mesh = Cast<UStaticMesh>(ImportedObject);
+					Mesh->SetLODGroup(FName("LevelArchitecture"), false);
+					Mesh->GetBodySetup()->CollisionTraceFlag = ECollisionTraceFlag::CTF_UseComplexAsSimple;
+
 					ImportResultPhys->WaitUntilDone();
 					if (ImportResultPhys->GetImportedObjects().Num() > 0)
 						Mesh->ComplexCollisionMesh = Cast<UStaticMesh>(ImportResultPhys->GetImportedObjects()[0]);
 
-					Mesh->SetLODGroup(FName("LevelArchitecture"), false);
-					Mesh->GetBodySetup()->CollisionTraceFlag = ECollisionTraceFlag::CTF_UseComplexAsSimple;
+					bool isInjected = false;
 
-					Mesh->MarkPackageDirty();
+					// Create the material instance(s) for this model and set the instance parameters based on the json data
+					for (int i = 0; i < Mesh->GetStaticMaterials().Num(); i++)
+					{
+						FStaticMaterial &StaticMtl = Mesh->GetStaticMaterials()[i];
+						FString MtlName = StaticMtl.MaterialSlotName.ToString();
+						TSharedPtr<FJsonObject> MtlObject = Json.MtlNameToMtlObject[MtlName];
+
+						// If the material instance already exists, then we skip this
+						if (!NewMtls.Contains(MtlName))
+						{
+							IAssetTools &AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+							UObject *NewAsset = AssetTools.CreateAsset(MtlName, TEXT("/Game/Assets/WoWExport/Meshes/Materials/"), UMaterialInstanceConstant::StaticClass(), NewObject<UMaterialInstanceConstantFactoryNew>());
+							MtlData Mtl;
+							Mtl.Instance = Cast<UMaterialInstanceConstant>(NewAsset);
+							Mtl.Instance->SetParentEditorOnly(ModelMaterial);
+
+							if (Json.FileType == TEXT("wmo"))
+							{
+								const int Shader = MtlObject->GetIntegerField(TEXT("shader"));
+								int BlendMode = MtlObject->GetIntegerField(TEXT("blendMode"));
+								bool isEmissive = Shader == 9 || Shader == 12 || Shader == 15;
+								Mtl.Instance->BasePropertyOverrides.bOverride_BlendMode = true;
+								Mtl.Instance->BasePropertyOverrides.BlendMode = EGxBlendToUE5(BlendMode);
+								Mtl.Instance->SetStaticSwitchParameterValueEditorOnly(FName("IsEmissive"), isEmissive);
+								Mtl.Instance->SetStaticSwitchParameterValueEditorOnly(FName("IsReflective"), true);
+
+								Mtl.BlendMode = BlendMode;
+								Mtl.isM2 = false;
+
+								if (Shader == 23) // Shader 23 (pixelShader 20) has vertex colors that need to be injected
+								{
+									Mtl.Instance->SetStaticSwitchParameterValueEditorOnly(FName("isShader20"), true);
+									if (!isInjected)
+									{
+										InjectVertexColors(Mesh, JsonObject);
+										isInjected = true;
+									}
+
+									Mtl.ParamToTexName.Add(TEXT("Texture2"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture2"))]);
+									Mtl.ParamToTexName.Add(TEXT("Texture3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture3"))]);
+									Mtl.ParamToTexName.Add(TEXT("Color3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("color3"))]);
+									Mtl.ParamToTexName.Add(TEXT("Flags3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("flags3"))]);
+
+									TArray<int> HeightFDIDs;
+									const TArray<TSharedPtr<FJsonValue>> &RuntimeDataArray = MtlObject->GetArrayField(TEXT("runtimeData"));
+									for (const TSharedPtr<FJsonValue> &Val : RuntimeDataArray)
+										HeightFDIDs.Add((int)Val->AsNumber());
+
+									for (int j = 0; j < 4; j++)
+										Mtl.ParamToTexName.Add(FName(*FString::Printf(TEXT("Height%d"), j)), Json.FDIDToTexName[HeightFDIDs[j]]);
+								}
+								else
+									Mtl.ParamToTexName.Add(TEXT("Texture1"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture1"))]);
+							}
+							else
+							{
+								TSharedPtr<FJsonObject> TexUnit = Json.MtlNameToTexUnit[MtlName];
+								int BlendMode = M2ToEGxBlend(MtlObject->GetIntegerField(TEXT("blendingMode")));
+								int MtlFlags = MtlObject->GetIntegerField(TEXT("flags"));
+								int TexFlags = TexUnit->GetIntegerField(TEXT("flags"));
+								bool isEmissive = (MtlFlags & 0x01) != 0;
+								bool isTwoSided = (MtlFlags & 0x04) != 0;
+								bool isReflective = (TexFlags & 0x80) != 0;
+
+								Mtl.ParamToTexName.Add(TEXT("Texture1"), TEXT("TEX") + MtlName.Mid(3));
+								Mtl.BlendMode = BlendMode;
+								Mtl.isM2 = true;
+
+								Mtl.Instance->BasePropertyOverrides.bOverride_BlendMode = true;
+								Mtl.Instance->BasePropertyOverrides.BlendMode = EGxBlendToUE5(BlendMode);
+								Mtl.Instance->BasePropertyOverrides.bOverride_TwoSided = true;
+								Mtl.Instance->BasePropertyOverrides.TwoSided = isTwoSided || isEmissive;
+								Mtl.Instance->SetStaticSwitchParameterValueEditorOnly(FName("IsEmissive"), isEmissive);
+								Mtl.Instance->SetStaticSwitchParameterValueEditorOnly(FName("IsReflective"), isReflective);
+
+								if (isReflective)
+									Mtl.Instance->SetScalarParameterValueEditorOnly(FName("Metallic"), 1.0f);
+
+								if (isTwoSided && BlendMode == 1 && isFoliage)
+								{
+									Mtl.Instance->BasePropertyOverrides.bOverride_ShadingModel = true;
+									Mtl.Instance->BasePropertyOverrides.ShadingModel = EMaterialShadingModel::MSM_TwoSidedFoliage;
+									Mtl.Instance->SetStaticSwitchParameterValueEditorOnly(FName("EnableWind"), true);
+								}
+							}
+							NewMtls.Add(MtlName, Mtl);
+						}
+						StaticMtl.MaterialInterface = NewMtls[MtlName].Instance;
+					}
 					Mesh->PostEditChange();
-
 					ImportedModels.Add(Mesh);
 				}
-				if (UTexture2D *Texture = Cast<UTexture2D>(ImportedObject))
-					ImportedTextures.Add(Texture);
 
-				if (UMaterialInstance *Material = Cast<UMaterialInstance>(ImportedObject))
-					ImportedMaterials.Add(Material);
+				if (UTexture2D *Texture = Cast<UTexture2D>(ImportedObject))
+					ImportedTextures.Add(Texture->GetName(), Texture);
 			}
 		}
 	}
 
-	// Remove duplicates from ImportedTextures and ImportedMaterials
-	ImportedTextures = TSet<UTexture2D*>(ImportedTextures).Array();
-	ImportedMaterials = TSet<UMaterialInstance*>(ImportedMaterials).Array();
+	{ // We assign textures to material instances when all textures have been imported
+		FScopedSlowTask SlowTask(NewMtls.Num(), LOCTEXT("AssigningTextures", "Assigning Textures..."));
+		SlowTask.MakeDialog();
 
-	for (UMaterialInstance *Material : ImportedMaterials)
+		for (auto &MtlPair : NewMtls)
+		{
+			SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("AssigningTexture", "Assigning Textures for Material: {0}"), FText::FromString(MtlPair.Key)));
+			MtlData &Mtl = MtlPair.Value;
+			for (auto &ParamPair : Mtl.ParamToTexName)
+			{
+				UTexture2D *Texture = ImportedTextures[ParamPair.Value];
+				Mtl.Instance->SetTextureParameterValueEditorOnly(ParamPair.Key, Texture);
+
+				if (Texture->HasAlphaChannel() && (Mtl.BlendMode != 1 && Mtl.BlendMode != 2 && Mtl.BlendMode != 11))
+				{
+					Mtl.Instance->SetStaticSwitchParameterValueEditorOnly(FName("isReflective"), true);
+					Mtl.Instance->SetScalarParameterValueEditorOnly(FName("Metallic"), 1.0f);
+					if (Mtl.isM2)
+						Mtl.Instance->SetStaticSwitchParameterValueEditorOnly(FName("InvertAlpha"), true);
+				}
+				Mtl.Instance->PostEditChange();
+			}
+		}
+	}
+	return ImportedModels;
+}
+
+JsonData FWoWLandscapeImporterModule::ParseModelJson(const TSharedPtr<FJsonObject> &JsonObject)
+{
+	JsonData Json;
+	Json.FileType = JsonObject->GetStringField(TEXT("fileType"));
+	TArray<TSharedPtr<FJsonValue>> MtlArray = JsonObject->GetArrayField(TEXT("materials"));
+	TArray<TSharedPtr<FJsonValue>> TexArray = JsonObject->GetArrayField(TEXT("textures"));
+	TArray<TSharedPtr<FJsonValue>> TexComboArray = JsonObject->GetArrayField(TEXT("textureCombos"));
+
+	// Build FDID -> Texture Name Lookup
+	for (int TexIdx = 0; TexIdx < TexArray.Num(); ++TexIdx)
 	{
-		FString TextureName = FString("TEX") + Material->GetName().Mid(3);
-		UTexture2D **Texture = ImportedTextures.FindByPredicate([&TextureName](const UTexture2D *Tex) { return Tex->GetName() == TextureName; });
-
-		UMaterialInstanceConstant *MaterialInstance = Cast<UMaterialInstanceConstant>(Material);
-		UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MaterialInstance, FName("ModelTexture"), *Texture);
-
-		MaterialInstance->MarkPackageDirty();
-		MaterialInstance->PostEditChange();
+		TSharedPtr<FJsonObject> TexObject = TexArray[TexIdx]->AsObject();
+		FString TexName = TEXT("TEX") + TexObject->GetStringField(TEXT("mtlName")).Mid(3);
+		int FDID = TexObject->GetIntegerField(TEXT("fileDataID"));
+		Json.FDIDToTexName.Add(FDID, TexName);
 	}
 
-	return ImportedModels;
+	// Build Mtl Name -> Mtl Object Lookup (and Mtl Name -> Tex Unit Object for M2)
+	if (Json.FileType == TEXT("m2"))
+	{
+		TArray<TSharedPtr<FJsonValue>> TexUnitArray = JsonObject->GetObjectField(TEXT("skin"))->GetArrayField(TEXT("textureUnits"));
+		for (int UnitIdx = 0; UnitIdx < TexUnitArray.Num(); ++UnitIdx)
+		{
+			TSharedPtr<FJsonObject> UnitObject = TexUnitArray[UnitIdx]->AsObject();
+			int MtlIndex = UnitObject->GetNumberField(TEXT("materialIndex"));
+			int Flags = UnitObject->GetNumberField(TEXT("flags"));
+			int TextureIndex = TexComboArray[UnitObject->GetNumberField(TEXT("textureComboIndex"))]->AsNumber();
+			FString MtlName = TexArray[TextureIndex]->AsObject()->GetStringField(TEXT("mtlName"));
+
+			if (!Json.MtlNameToMtlObject.Contains(MtlName) || (Flags & 0x80) != 0) // First come, first served with exception of 0x80 flag
+			{
+				Json.MtlNameToMtlObject.Add(MtlName, MtlArray[MtlIndex]->AsObject());
+				Json.MtlNameToTexUnit.Add(MtlName, UnitObject);
+			}
+		}
+	}
+	else
+	{
+		for (int MtlIndex = 0; MtlIndex < MtlArray.Num(); ++MtlIndex)
+		{
+			TSharedPtr<FJsonObject> MtlObject = MtlArray[MtlIndex]->AsObject();
+			int Shader = MtlObject->GetIntegerField(TEXT("shader"));
+
+			// shader 23 (pixelShader 20) uses texture2 as the MTL material reference in blender script
+			int FDID = 0;
+			if (Shader == 23)
+				FDID = MtlObject->GetIntegerField(TEXT("texture2"));
+			else
+				FDID = MtlObject->GetIntegerField(TEXT("texture1"));
+
+			for (int TexIdx = 0; TexIdx < TexArray.Num(); ++TexIdx)
+			{
+				TSharedPtr<FJsonObject> TextureObject = TexArray[TexIdx]->AsObject();
+				if (TextureObject->GetIntegerField(TEXT("fileDataID")) == FDID)
+				{
+					FString MtlName = TextureObject->GetStringField(TEXT("mtlName"));
+					if (!Json.MtlNameToMtlObject.Contains(MtlName) || Shader == 23) // First come, first served with exception of shader 23
+						Json.MtlNameToMtlObject.Add(MtlName, MtlObject);
+					break;
+				}
+			}
+		}
+	}
+	return Json;
+}
+
+void FWoWLandscapeImporterModule::InjectVertexColors(UStaticMesh *Mesh, const TSharedPtr<FJsonObject> &JsonObject)
+{
+	TArray<FVector4f> AllVertexColors;
+	const TArray<TSharedPtr<FJsonValue>> &GroupsArray = JsonObject->GetArrayField(TEXT("groups"));
+
+	for (const TSharedPtr<FJsonValue> &GroupVal : GroupsArray)
+	{
+		TSharedPtr<FJsonObject> GroupObj = GroupVal->AsObject();
+
+		const TArray<TSharedPtr<FJsonValue>> *ColorArray = nullptr;
+		// Prefer colors2 for WMO Shader 20, fallback to vertexColours
+		if (!GroupObj->TryGetArrayField(TEXT("colors2"), ColorArray))
+			GroupObj->TryGetArrayField(TEXT("vertexColours"), ColorArray);
+
+		for (int c = 0; c < ColorArray->Num(); c += 4)
+		{
+			float B = (*ColorArray)[c]->AsNumber() / 255.0f;
+			float G = (*ColorArray)[c + 1]->AsNumber() / 255.0f;
+			float R = (*ColorArray)[c + 2]->AsNumber() / 255.0f;
+			float A = (*ColorArray)[c + 3]->AsNumber() / 255.0f;
+			AllVertexColors.Add(FVector4f(R, G, B, A));
+		}
+	}
+
+	FMeshDescription *MeshDescription = Mesh->GetMeshDescription(0);
+	FStaticMeshAttributes Attributes(*MeshDescription);
+
+	TVertexInstanceAttributesRef<FVector4f> InstanceColors = Attributes.GetVertexInstanceColors();
+	Attributes.Register();
+	MeshDescription->VertexInstanceAttributes().RegisterAttribute<FVector4f>(MeshAttribute::VertexInstance::Color, 1, FVector4f(1.0f, 1.0f, 1.0f, 1.0f));
+	InstanceColors = Attributes.GetVertexInstanceColors();
+
+	for (const FVertexInstanceID VertexInstanceID : MeshDescription->VertexInstances().GetElementIDs())
+	{
+		FVertexID VertexID = MeshDescription->GetVertexInstanceVertex(VertexInstanceID);
+		if (VertexID.GetValue() < AllVertexColors.Num())
+			InstanceColors.Set(VertexInstanceID, AllVertexColors[VertexID.GetValue()]);
+	}
+	Mesh->CommitMeshDescription(0);
+}
+
+int FWoWLandscapeImporterModule::M2ToEGxBlend(const int BlendingMode)
+{
+	switch (BlendingMode)
+	{
+	case 0: return 0;  // Opaque
+	case 1: return 1;  // Alpha key
+	case 2: return 2;  // Alpha
+	case 3: return 10; // No Alpha Additive
+	case 4: return 3;  // Additive
+	case 5: return 4;  // Modulate
+	case 6: return 5;  // Modulate2x
+	case 7: return 13; // BlendAdd
+	default: return 0;
+	}
+}
+
+EBlendMode FWoWLandscapeImporterModule::EGxBlendToUE5(int BlendMode)
+{
+	switch (BlendMode)
+	{
+	case 0: return EBlendMode::BLEND_Opaque;
+	case 1: return EBlendMode::BLEND_Masked;
+	case 2: return EBlendMode::BLEND_Translucent;
+	case 3: return EBlendMode::BLEND_Additive;
+	case 4: return EBlendMode::BLEND_Modulate;
+	case 5: return EBlendMode::BLEND_Modulate;
+	case 6: return EBlendMode::BLEND_Modulate;
+	case 7: return EBlendMode::BLEND_Additive;
+	case 8: return EBlendMode::BLEND_Opaque;
+	case 9: return EBlendMode::BLEND_Opaque;
+	case 10: return EBlendMode::BLEND_Additive;
+	case 11: return EBlendMode::BLEND_Translucent;
+	case 13: return EBlendMode::BLEND_AlphaComposite;
+	default: return EBlendMode::BLEND_Opaque;
+	}
 }
 
 TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterModule::CreateProxyData(const int StartRow, const int StartColumn)
@@ -801,10 +991,10 @@ TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterM
 		if (TileY == 256)
 		{
 			CurrentRow++;
-			TileY = 1;													// We skip first row/column of subsequent tiles to avoid overlapping vertices(heightmaps share borders)
+			TileY = 1; // We skip first row/column of subsequent tiles to avoid overlapping vertices(heightmaps share borders)
 		}
 
-		int ChunkY = TileY / 16; 		// All heightmaps/alphamaps are now 256x256, so we dont need to worry about the special case for the first 127 pixels and can just do an integer division to get the chunk index.
+		int ChunkY = TileY / 16; // All heightmaps/alphamaps are now 256x256, so we dont need to worry about the special case for the first 127 pixels and can just do an integer division to get the chunk index.
 		int CurrentColumn = StartColumn;
 		int TileX = 0;
 		for (int ProxyX = 0; ProxyX < ProxyWidth; ProxyX++)
@@ -886,140 +1076,229 @@ TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterM
 	return MakeTuple(MoveTemp(Heightmap), MoveTemp(LayerInfoArray));
 }
 
-UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString MaterialName, bool isFoliage)
+UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString MaterialName)
 {
 	const FString MaterialDirectory = TEXT("/Game/Assets/WoWExport/Materials/");
-
 	IAssetTools &AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 	AssetTools.CreateAsset(MaterialName, MaterialDirectory, UMaterial::StaticClass(), NewObject<UMaterialFactoryNew>());
 
 	const FString MaterialPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *MaterialName);
 	UMaterial *ModelMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPackagePath));
-	ModelMaterial->BlendMode = BLEND_Masked;
 	ModelMaterial->OpacityMaskClipValue = 0.5f;
-	ModelMaterial->TwoSided = isFoliage ? true : false;
-	ModelMaterial->SetShadingModel(isFoliage ? MSM_TwoSidedFoliage : MSM_DefaultLit);
 
-	UMaterialExpressionTextureSampleParameter2D *TextureSample = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -800, 0, ModelMaterial);
-	TextureSample->ParameterName = FName("ModelTexture");
-	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_BaseColor)->Expression = TextureSample;
-	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_OpacityMask)->Expression = TextureSample;
-	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_OpacityMask)->OutputIndex = 4;
+	UMaterialExpressionTextureSampleParameter2D *TextureSample0 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -800, 0, ModelMaterial);
+	TextureSample0->ParameterName = FName("Texture1");
 
-	UMaterialExpressionConstant *ZeroConstant = CreateNode(NewObject<UMaterialExpressionConstant>(ModelMaterial), -800, 550, ModelMaterial);
+	UMaterialExpressionConstant *ZeroConstant = CreateNode(NewObject<UMaterialExpressionConstant>(ModelMaterial), -950, 800, ModelMaterial);
 	ZeroConstant->R = 0.0f;
 
-	if (isFoliage)
+	auto AddInput = [&](UMaterialExpressionCustom *CustomNode, const char *Name, UMaterialExpression *Expression, int OutputIndex = 0)
 	{
-		ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_SubsurfaceColor)->Expression = TextureSample;
-
-		UClass *PerInstanceFadeAmountClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.MaterialExpressionPerInstanceFadeAmount"));
-		UMaterialExpression *PerInstanceFadeAmount = CreateNode(Cast<UMaterialExpression>(NewObject<UObject>(ModelMaterial, PerInstanceFadeAmountClass)), -1050, 200, ModelMaterial);
-
-		UMaterialExpressionMaterialFunctionCall *DitherTemporalAA = CreateNode(NewObject<UMaterialExpressionMaterialFunctionCall>(ModelMaterial), -1050, 250, ModelMaterial);
-		UMaterialFunction *DitherFunction = LoadObject<UMaterialFunction>(nullptr, TEXT("/Engine/Functions/Engine_MaterialFunctions02/Utility/DitherTemporalAA"));
-		DitherTemporalAA->MaterialFunction = DitherFunction;
-		DitherTemporalAA->UpdateFromFunctionResource();
-		DitherTemporalAA->GetInput(0)->Expression = PerInstanceFadeAmount;
-
-		UMaterialExpressionMultiply *OpacityMultiply = CreateNode(NewObject<UMaterialExpressionMultiply>(ModelMaterial), -400, 200, ModelMaterial);
-		OpacityMultiply->A.Expression = TextureSample;
-		OpacityMultiply->A.OutputIndex = 4;
-		OpacityMultiply->B.Expression = DitherTemporalAA;
-
-		ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_OpacityMask)->Expression = OpacityMultiply;
-		ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_OpacityMask)->OutputIndex = 0;
-
-		UMaterialExpressionMaterialFunctionCall *GrassWindNode = CreateNode(NewObject<UMaterialExpressionMaterialFunctionCall>(ModelMaterial), -800, 650, ModelMaterial);
-		GrassWindNode->MaterialFunction = LoadObject<UMaterialFunction>(nullptr, TEXT("/Engine/Functions/Engine_MaterialFunctions01/WorldPositionOffset/SimpleGrassWind.SimpleGrassWind"));
-		GrassWindNode->UpdateFromFunctionResource();
-
-		UMaterialExpressionScalarParameter *WindIntensityParam = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, 550, ModelMaterial);
-		WindIntensityParam->ParameterName = FName("WindIntensity");
-		WindIntensityParam->DefaultValue = 0.8f;
-		UMaterialExpressionScalarParameter *WindWeightParam = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, 650, ModelMaterial);
-		WindWeightParam->ParameterName = FName("WindWeight");
-		WindWeightParam->DefaultValue = 0.3f;
-		UMaterialExpressionScalarParameter *WindSpeedParam = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, 750, ModelMaterial);
-		WindSpeedParam->ParameterName = FName("WindSpeed");
-		WindSpeedParam->DefaultValue = 0.2f;
-
-		GrassWindNode->GetInput(0)->Expression = WindIntensityParam;
-		GrassWindNode->GetInput(1)->Expression = WindWeightParam;
-		GrassWindNode->GetInput(2)->Expression = WindSpeedParam;
-
-		// Rolling wind logic (Compact Custom Node)
-		UMaterialExpressionCustom *CustomWind = CreateNode(NewObject<UMaterialExpressionCustom>(ModelMaterial), -800, 950, ModelMaterial);
-		CustomWind->Code = TEXT("float Phase = (WorldPos.x + WorldPos.y) * Frequency + Time * Speed;\n"
-								"return float3(sin(Phase) * Amount.x, cos(Phase * 0.85) * Amount.y, 0) * (WorldPos.z - ObjectPos.z) * HeightScale;");
-		CustomWind->Description = TEXT("Rolling Waves");
-		CustomWind->Inputs.Empty();
-		GrassWindNode->GetInput(3)->Expression = CustomWind;
-		GrassWindNode->GetInput(3)->OutputIndex = 0;
-
-		auto AddInput = [&](const char *Name, UMaterialExpression *Expression)
+		FCustomInput &Input = CustomNode->Inputs.AddDefaulted_GetRef();
+		Input.InputName = FName(Name);
+		Input.Input.Expression = Expression;
+		Input.Input.OutputIndex = OutputIndex;
+	};
+	auto CreateStaticSwitch = [&](const FName &ParamName, UMaterialExpression *TrueExp, int32 TrueIdx, UMaterialExpression *FalseExp, int32 FalseIdx, int32 X, int32 Y, bool bDefault) -> UMaterialExpressionStaticSwitchParameter *
+	{
+		UMaterialExpressionStaticSwitchParameter *Switch = CreateNode(NewObject<UMaterialExpressionStaticSwitchParameter>(ModelMaterial), X, Y, ModelMaterial);
+		Switch->ParameterName = ParamName;
+		Switch->DefaultValue = bDefault;
+		if (TrueExp)
 		{
-			FCustomInput &NewInput = CustomWind->Inputs.AddDefaulted_GetRef();
-			NewInput.InputName = FName(Name);
-			NewInput.Input.Expression = Expression;
-		};
+			Switch->A.Expression = TrueExp;
+			Switch->A.OutputIndex = TrueIdx;
+		}
+		if (FalseExp)
+		{
+			Switch->B.Expression = FalseExp;
+			Switch->B.OutputIndex = FalseIdx;
+		}
+		return Switch;
+	};
 
-		AddInput("WorldPos", CreateNode(NewObject<UMaterialExpressionWorldPosition>(ModelMaterial), -1100, 850, ModelMaterial));
+	// -- Foliage --
+	int Section0 = 700;
+	UClass *PerInstanceFadeAmountClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.MaterialExpressionPerInstanceFadeAmount"));
+	UMaterialExpression *PerInstanceFadeAmount = CreateNode(Cast<UMaterialExpression>(NewObject<UObject>(ModelMaterial, PerInstanceFadeAmountClass)), -1100, Section0 + 370, ModelMaterial);
 
-		UClass *ObjectPosClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.MaterialExpressionObjectPositionWS"));
-		AddInput("ObjectPos", CreateNode(Cast<UMaterialExpression>(NewObject<UObject>(ModelMaterial, ObjectPosClass)), -1100, 1000, ModelMaterial));
+	UMaterialExpressionMaterialFunctionCall *DitherTemporalAA = CreateNode(NewObject<UMaterialExpressionMaterialFunctionCall>(ModelMaterial), -1100, Section0 + 450, ModelMaterial);
+	UMaterialFunction *DitherFunction = LoadObject<UMaterialFunction>(nullptr, TEXT("/Engine/Functions/Engine_MaterialFunctions02/Utility/DitherTemporalAA"));
+	DitherTemporalAA->MaterialFunction = DitherFunction;
+	DitherTemporalAA->UpdateFromFunctionResource();
+	DitherTemporalAA->GetInput(0)->Expression = PerInstanceFadeAmount;
 
-		auto *Time = CreateNode(NewObject<UMaterialExpressionTime>(ModelMaterial), -1100, 1100, ModelMaterial);
-		AddInput("Time", Time);
+	UMaterialExpressionMultiply *OpacityMultiply = CreateNode(NewObject<UMaterialExpressionMultiply>(ModelMaterial), -400, Section0 + 400, ModelMaterial);
+	OpacityMultiply->B.Expression = DitherTemporalAA;
 
-		auto *Speed = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, 1200, ModelMaterial);
-		Speed->ParameterName = "WindWaveSpeed";
-		Speed->DefaultValue = 1.5f;
-		AddInput("Speed", Speed);
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_OpacityMask)->Expression = OpacityMultiply;
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_OpacityMask)->OutputIndex = 0;
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_Opacity)->Expression = OpacityMultiply;
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_Opacity)->OutputIndex = 0;
 
-		auto *Freq = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, 1300, ModelMaterial);
-		Freq->ParameterName = "WindWaveFrequency";
-		Freq->DefaultValue = 0.001f;
-		AddInput("Frequency", Freq);
+	UMaterialExpressionMaterialFunctionCall *GrassWindNode = CreateNode(NewObject<UMaterialExpressionMaterialFunctionCall>(ModelMaterial), -800, Section0 + 650, ModelMaterial);
+	GrassWindNode->MaterialFunction = LoadObject<UMaterialFunction>(nullptr, TEXT("/Engine/Functions/Engine_MaterialFunctions01/WorldPositionOffset/SimpleGrassWind.SimpleGrassWind"));
+	GrassWindNode->UpdateFromFunctionResource();
 
-		auto *Amount = CreateNode(NewObject<UMaterialExpressionVectorParameter>(ModelMaterial), -1100, 1400, ModelMaterial);
-		Amount->ParameterName = "WindWaveAmount";
-		Amount->DefaultValue = FLinearColor(10.0f, 10.0f, 0.0f, 0.0f);
-		AddInput("Amount", Amount);
+	UMaterialExpressionScalarParameter *WindIntensityParam = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, Section0 + 550, ModelMaterial);
+	WindIntensityParam->ParameterName = FName("WindIntensity");
+	WindIntensityParam->DefaultValue = 0.8f;
+	UMaterialExpressionScalarParameter *WindWeightParam = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, Section0 + 650, ModelMaterial);
+	WindWeightParam->ParameterName = FName("WindWeight");
+	WindWeightParam->DefaultValue = 0.3f;
+	UMaterialExpressionScalarParameter *WindSpeedParam = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, Section0 + 750, ModelMaterial);
+	WindSpeedParam->ParameterName = FName("WindSpeed");
+	WindSpeedParam->DefaultValue = 0.2f;
 
-		auto *Scale = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, 1600, ModelMaterial);
-		Scale->ParameterName = "WindHeightScale";
-		Scale->DefaultValue = 0.005f;
-		AddInput("HeightScale", Scale);
+	GrassWindNode->GetInput(0)->Expression = WindIntensityParam;
+	GrassWindNode->GetInput(1)->Expression = WindWeightParam;
+	GrassWindNode->GetInput(2)->Expression = WindSpeedParam;
 
-		UMaterialExpressionStaticSwitchParameter *WindSwitch = CreateNode(NewObject<UMaterialExpressionStaticSwitchParameter>(ModelMaterial), -450, 650, ModelMaterial);
-		WindSwitch->ParameterName = FName("EnableWind");
-		WindSwitch->DefaultValue = true;
-		WindSwitch->A.Expression = GrassWindNode;
-		WindSwitch->B.Expression = ZeroConstant;
+	// Rolling wind logic (Compact Custom Node)
+	UMaterialExpressionCustom *CustomWind = CreateNode(NewObject<UMaterialExpressionCustom>(ModelMaterial), -800, Section0 + 950, ModelMaterial);
+	CustomWind->Description = TEXT("Rolling Waves");
+	CustomWind->Inputs.Empty();
+	GrassWindNode->GetInput(3)->Expression = CustomWind;
+	GrassWindNode->GetInput(3)->OutputIndex = 0;
+	AddInput(CustomWind, "WorldPos", CreateNode(NewObject<UMaterialExpressionWorldPosition>(ModelMaterial), -1100, Section0 + 850, ModelMaterial));
+	UClass *ObjectPosClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.MaterialExpressionObjectPositionWS"));
+	AddInput(CustomWind, "ObjectPos", CreateNode(Cast<UMaterialExpression>(NewObject<UObject>(ModelMaterial, ObjectPosClass)), -1100, Section0 + 1000, ModelMaterial));
+	auto *Time = CreateNode(NewObject<UMaterialExpressionTime>(ModelMaterial), -1100, Section0 + 1100, ModelMaterial);
+	AddInput(CustomWind, "Time", Time);
+	auto *Speed = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, Section0 + 1200, ModelMaterial);
+	Speed->ParameterName = "WindWaveSpeed";
+	Speed->DefaultValue = 1.5f;
+	AddInput(CustomWind, "Speed", Speed);
+	auto *Freq = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, Section0 + 1300, ModelMaterial);
+	Freq->ParameterName = "WindWaveFrequency";
+	Freq->DefaultValue = 0.001f;
+	AddInput(CustomWind, "Frequency", Freq);
+	auto *Amount = CreateNode(NewObject<UMaterialExpressionVectorParameter>(ModelMaterial), -1100, Section0 + 1400, ModelMaterial);
+	Amount->ParameterName = "WindWaveAmount";
+	Amount->DefaultValue = FLinearColor(10.0f, 10.0f, 0.0f, 0.0f);
+	AddInput(CustomWind, "Amount", Amount);
+	auto *Scale = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -1100, Section0 + 1600, ModelMaterial);
+	Scale->ParameterName = "WindHeightScale";
+	Scale->DefaultValue = 0.005f;
+	AddInput(CustomWind, "HeightScale", Scale);
 
-		ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_WorldPositionOffset)->Expression = WindSwitch;
-	}
+	CustomWind->Code = TEXT("float Phase = (WorldPos.x + WorldPos.y) * Frequency + Time * Speed;\n"
+							"return float3(sin(Phase) * Amount.x, cos(Phase * 0.85) * Amount.y, 0) * (WorldPos.z - ObjectPos.z) * HeightScale;");
 
-	UMaterialExpressionStaticSwitchParameter *MetallicSwitch = CreateNode(NewObject<UMaterialExpressionStaticSwitchParameter>(ModelMaterial), -400, 50, ModelMaterial);
-	MetallicSwitch->ParameterName = FName("MetallicSwitch");
-	MetallicSwitch->DefaultValue = false;
-	UMaterialExpressionOneMinus *OneMinus = CreateNode(NewObject<UMaterialExpressionOneMinus>(ModelMaterial), -480, 65, ModelMaterial);
-	OneMinus->Input.Expression = TextureSample;
-	OneMinus->Input.OutputIndex = 4;
-	MetallicSwitch->A.Expression = OneMinus;
-	MetallicSwitch->A.OutputIndex = 4;
-	MetallicSwitch->B.Expression = ZeroConstant;
-	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_Metallic)->Expression = MetallicSwitch;
+	UMaterialExpressionStaticSwitchParameter *WindSwitch = CreateNode(NewObject<UMaterialExpressionStaticSwitchParameter>(ModelMaterial), -450, Section0 + 650, ModelMaterial);
+	WindSwitch->ParameterName = FName("EnableWind");
+	WindSwitch->DefaultValue = false;
+	WindSwitch->A.Expression = GrassWindNode;
+	WindSwitch->B.Expression = ZeroConstant;
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_WorldPositionOffset)->Expression = WindSwitch;
 
-	UMaterialExpressionScalarParameter *SpecularParameter = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -800, 300, ModelMaterial);
+	// -- WMO Shader 20 --
+	int Section1 = 1200;
+	UMaterialExpressionVertexColor *VertexColorNode = CreateNode(NewObject<UMaterialExpressionVertexColor>(ModelMaterial), -1200 - Section1, 0, ModelMaterial);
+	UMaterialExpressionTextureSampleParameter2D *TextureSample1 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 200, ModelMaterial);
+	TextureSample1->ParameterName = FName("Texture2");
+	UMaterialExpressionTextureSampleParameter2D *TextureSample2 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 450, ModelMaterial);
+	TextureSample2->ParameterName = FName("Texture3");
+	UMaterialExpressionTextureSampleParameter2D *TextureSample3 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 700, ModelMaterial);
+	TextureSample3->ParameterName = FName("Color3");
+	UMaterialExpressionTextureSampleParameter2D *TextureSample4 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 950, ModelMaterial);
+	TextureSample4->ParameterName = FName("Flags3");
+	UMaterialExpressionTextureSampleParameter2D *HeightSample0 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 1200, ModelMaterial);
+	HeightSample0->ParameterName = FName("Height0");
+	UMaterialExpressionTextureSampleParameter2D *HeightSample1 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 1450, ModelMaterial);
+	HeightSample1->ParameterName = FName("Height1");
+	UMaterialExpressionTextureSampleParameter2D *HeightSample2 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 1700, ModelMaterial);
+	HeightSample2->ParameterName = FName("Height2");
+	UMaterialExpressionTextureSampleParameter2D *HeightSample3 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 1950, ModelMaterial);
+	HeightSample3->ParameterName = FName("Height3");
+
+	// Competitive Blend Logic (HLSL)
+	UMaterialExpressionCustom *CustomBlend = CreateNode(NewObject<UMaterialExpressionCustom>(ModelMaterial), -400 - Section1, 400, ModelMaterial);
+	CustomBlend->Description = TEXT("WMOShader20_CompetitiveBlend");
+	CustomBlend->OutputType = CMOT_Float4;
+	CustomBlend->Inputs.Empty();
+	AddInput(CustomBlend, "Weights", VertexColorNode);
+	AddInput(CustomBlend, "D0", TextureSample1, 5);
+	AddInput(CustomBlend, "D1", TextureSample2, 5);
+	AddInput(CustomBlend, "D2", TextureSample3, 5);
+	AddInput(CustomBlend, "D3", TextureSample4, 5);
+	AddInput(CustomBlend, "H0", HeightSample0, 4);
+	AddInput(CustomBlend, "H1", HeightSample1, 4);
+	AddInput(CustomBlend, "H2", HeightSample2, 4);
+	AddInput(CustomBlend, "H3", HeightSample3, 4);
+	CustomBlend->PostEditChange();
+
+	// Implementation of height-suppression blend
+	CustomBlend->Code = TEXT(
+		"float weights[4];\n"
+		"weights[0] = Weights.r; // Texture2 = Red channel\n"
+		"weights[1] = Weights.g; // Texture3 = Green channel\n"
+		"weights[2] = Weights.b; // Color3 = Blue channel\n"
+		"weights[3] = saturate(1.0 - (weights[0] + weights[1] + weights[2])); // Flags3 = Base\n"
+		"\n"
+		"float heights[4] = {H0, H1, H2, H3};\n"
+		"float4 diff[4] = {D0, D1, D2, D3};\n"
+		"\n"
+		"float alphas[4];\n"
+		"float maxAlpha = 0.0;\n"
+		"for(int i = 0; i < 4; i++) {\n"
+		"    alphas[i] = weights[i] * max(heights[i], 0.004);\n"
+		"    maxAlpha = max(maxAlpha, alphas[i]);\n"
+		"}\n"
+		"\n"
+		"float4 result = float4(0,0,0,0);\n"
+		"float totalWeight = 0.0;\n"
+		"for(int i = 0; i < 4; i++) {\n"
+		"    float supp = (1.0 - saturate(maxAlpha - alphas[i])) * alphas[i];\n"
+		"    result += diff[i] * supp;\n"
+		"    totalWeight += supp;\n"
+		"}\n"
+		"\n"
+		"return result / max(totalWeight, 0.0001);");
+
+	// Shader switches for controlling output of WMO/M2 materials
+	UMaterialExpressionStaticSwitchParameter *isShader20Switch = CreateStaticSwitch(FName("isShader20"), CustomBlend, 0, TextureSample0, 5, -1150, 400, false);
+	UMaterialExpressionComponentMask *AlphaMask = CreateNode(NewObject<UMaterialExpressionComponentMask>(ModelMaterial), -900, 325, ModelMaterial);
+	AlphaMask->Input.Expression = isShader20Switch;
+	AlphaMask->R = false;
+	AlphaMask->G = false;
+	AlphaMask->B = false;
+	AlphaMask->A = true;
+	OpacityMultiply->A.Expression = AlphaMask;
+	UMaterialExpressionComponentMask *BaseMask = CreateNode(NewObject<UMaterialExpressionComponentMask>(ModelMaterial), -900, 475, ModelMaterial);
+	BaseMask->Input.Expression = isShader20Switch;
+	BaseMask->R = true;
+	BaseMask->G = true;
+	BaseMask->B = true;
+	BaseMask->A = false;
+	UMaterialExpressionStaticSwitchParameter *isEmissive = CreateStaticSwitch(FName("isEmissive"), BaseMask, 0, ZeroConstant, 0, -450, 475, false);
+	UMaterialExpressionOneMinus *MinusTexAlpha = CreateNode(NewObject<UMaterialExpressionOneMinus>(ModelMaterial), -775, 325, ModelMaterial);
+	MinusTexAlpha->Input.Expression = AlphaMask;
+	UMaterialExpressionStaticSwitchParameter *InvTexAlpha = CreateStaticSwitch(FName("InvertAlpha"), MinusTexAlpha, 0, AlphaMask, 0, -675, 325, false);
+	UMaterialExpressionStaticSwitchParameter *isReflective = CreateStaticSwitch(FName("isReflective"), InvTexAlpha, 0, ZeroConstant, 0, -450, 325, false);
+
+	// Parameters for Metallic/Specular control
+	UMaterialExpressionScalarParameter *MetallicParameter = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -450, 0, ModelMaterial);
+	MetallicParameter->ParameterName = FName("Metallic");
+	MetallicParameter->DefaultValue = 0.0f;
+	UMaterialExpressionScalarParameter *SpecularParameter = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -450, 100, ModelMaterial);
 	SpecularParameter->ParameterName = FName("Specular");
 	SpecularParameter->DefaultValue = 0.0f;
-	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_Specular)->Expression = SpecularParameter;
-	UMaterialExpressionScalarParameter *RoughnessParameter = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -800, 400, ModelMaterial);
+	UMaterialExpressionScalarParameter *RoughnessParameter = CreateNode(NewObject<UMaterialExpressionScalarParameter>(ModelMaterial), -450, 200, ModelMaterial);
 	RoughnessParameter->ParameterName = FName("Roughness");
 	RoughnessParameter->DefaultValue = 0.2f;
+	UMaterialExpressionMultiply *MetallicMultiply = CreateNode(NewObject<UMaterialExpressionMultiply>(ModelMaterial), -200, 0, ModelMaterial);
+	MetallicMultiply->A.Expression = isReflective;
+	MetallicMultiply->B.Expression = MetallicParameter;
+	UMaterialExpressionMultiply *SpecularMultiply = CreateNode(NewObject<UMaterialExpressionMultiply>(ModelMaterial), -200, 100, ModelMaterial);
+	SpecularMultiply->A.Expression = isReflective;
+	SpecularMultiply->B.Expression = SpecularParameter;
+
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_BaseColor)->Expression = BaseMask;
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_Metallic)->Expression = MetallicMultiply;
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_Specular)->Expression = SpecularMultiply;
 	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_Roughness)->Expression = RoughnessParameter;
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_EmissiveColor)->Expression = isEmissive;
 
 	ModelMaterial->MarkPackageDirty();
 	ModelMaterial->PostEditChange();
@@ -1049,10 +1328,9 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 	FBox LandscapeBox(ForceInit);
 	ULandscapeInfo *LandscapeInfo = Landscape->GetLandscapeInfo();
 	LandscapeInfo->ForEachLandscapeProxy([&LandscapeBox](ALandscapeProxy *Proxy)
-	{
+										 {
 		LandscapeBox += Proxy->GetComponentsBoundingBox(true);
-		return true;
-	});
+		return true; });
 	RVTVolume->SetActorLocation(FVector(LandscapeBox.Min.X, LandscapeBox.Min.Y, LandscapeBox.Min.Z));
 	RVTVolume->SetActorScale3D(LandscapeBox.GetSize());
 
@@ -1178,7 +1456,7 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 			UMaterialExpressionLandscapeLayerSample *LayerSampleNode = CreateNode(NewObject<UMaterialExpressionLandscapeLayerSample>(LandscapeMaterial), Section0, 900 + (GrassOutputNode->GrassTypes.Num() * 130), LandscapeMaterial);
 			LayerSampleNode->ParameterName = LayerName;
 
-			UMaterialExpressionSmoothStep* SmoothStepNode = CreateNode(NewObject<UMaterialExpressionSmoothStep>(LandscapeMaterial), Section0 + 250, 900 + (GrassOutputNode->GrassTypes.Num() * 130), LandscapeMaterial);
+			UMaterialExpressionSmoothStep *SmoothStepNode = CreateNode(NewObject<UMaterialExpressionSmoothStep>(LandscapeMaterial), Section0 + 250, 900 + (GrassOutputNode->GrassTypes.Num() * 130), LandscapeMaterial);
 			SmoothStepNode->Value.Expression = LayerSampleNode;
 			SmoothStepNode->ConstMin = 0.4f;
 			SmoothStepNode->ConstMax = 1.0f;
@@ -1413,9 +1691,7 @@ TSharedPtr<FJsonObject> FWoWLandscapeImporterModule::LoadJsonObject(const FStrin
 		TSharedPtr<FJsonObject> JsonObject;
 		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
 		if (FJsonSerializer::Deserialize(Reader, JsonObject) && JsonObject.IsValid())
-		{
 			return JsonObject;
-		}
 	}
 	return nullptr;
 }

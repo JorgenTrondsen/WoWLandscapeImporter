@@ -3,11 +3,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Modules/ModuleManager.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
-#include "Math/Color.h"
 #include "LandscapeProxy.h"
+#include "Math/Color.h"
+#include "Modules/ModuleManager.h"
 
 class FToolBarBuilder;
 class FMenuBuilder;
@@ -69,6 +69,26 @@ struct ActorData
 	}
 };
 
+/** Data extracted from WoW model JSON file */
+struct JsonData
+{
+	FString FileType; // "wmo" or "m2"
+
+	// Lookups
+	TMap<FString, TSharedPtr<FJsonObject>> MtlNameToMtlObject;
+	TMap<FString, TSharedPtr<FJsonObject>> MtlNameToTexUnit;
+	TMap<int, FString> FDIDToTexName;
+};
+
+struct MtlData
+{
+	UMaterialInstanceConstant *Instance;
+	TMap<FName, FString> ParamToTexName;
+
+	bool isM2;
+	int BlendMode;
+};
+
 class FWoWLandscapeImporterModule : public IModuleInterface
 {
 public:
@@ -94,22 +114,28 @@ private:
 	void UpdateStatusMessage(const FString &Message, bool bIsError = false);
 
 	/** Function to import and create landscape layers */
-	void ImportLayers(TMap<int, TPair<FString, int>> &TexturePaths, TArray<FString> &FoliageFiles, TArray<FString> &FoliageJSONs);
+	void ImportLayers(TMap<int, TPair<FString, int>> &TexturePaths, TArray<FString> &FoliageFiles, TArray<FString> &FoliageJSONs, UMaterial *ModelMaterial);
 
-	TArray<UStaticMesh *> ImportModels(TArray<FString> &ModelPaths, UMaterial *ModelMaterial);
+	TArray<UStaticMesh *> ImportModels(TArray<FString> &ModelPaths, UMaterial *ModelMaterial, bool isFoliage = false);
+
+	/** Preprocessing and helper functions for model import */
+	JsonData ParseModelJson(const TSharedPtr<FJsonObject> &JsonObject);
+	void InjectVertexColors(UStaticMesh *Mesh, const TSharedPtr<FJsonObject> &JsonObject);
+	int M2ToEGxBlend(const int BlendingMode);
+	EBlendMode EGxBlendToUE5(int BlendMode);
 
 	/** Function to create proxy data for landscape import */
 	TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> CreateProxyData(const int Row, const int Column);
 
 	/** Helper functions*/
-	TSharedPtr<FJsonObject> LoadJsonObject(const FString& FilePath);
+	TSharedPtr<FJsonObject> LoadJsonObject(const FString &FilePath);
 	template <typename ArrayType>
-	bool LoadImageData(const FString& FilePath, ERGBFormat RGBFormat, int32 BitDepth, TArray<ArrayType>& OutRawData)
+	bool LoadImageData(const FString &FilePath, ERGBFormat RGBFormat, int32 BitDepth, TArray<ArrayType> &OutRawData)
 	{
 		TArray<uint8> FileData;
 		if (FFileHelper::LoadFileToArray(FileData, *FilePath))
 		{
-			IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+			IImageWrapperModule &ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
 			TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
 			if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(FileData.GetData(), FileData.Num()))
 			{
@@ -125,7 +151,7 @@ private:
 		return false;
 	}
 
-	UMaterial *CreateModelMaterial(const FString MaterialName, bool isFoliage = false);
+	UMaterial *CreateModelMaterial(const FString MaterialName);
 
 	void CreateLandscapeMaterial(ALandscape *Landscape);
 
@@ -148,8 +174,8 @@ private:
 	int WPGridSize = 1;
 
 	TArray<TArray<Tile>> TileGrid;
-
 	FString DirectoryPath;
+	FString OBJFilePath;
 
 	/** Key-value store for data and metadata of landscape layers */
 	TMap<FName, LayerMetadata> LayerMetadataMap;
