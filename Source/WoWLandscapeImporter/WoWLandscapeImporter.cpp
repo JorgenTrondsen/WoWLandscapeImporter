@@ -734,27 +734,36 @@ TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> 
 								Mtl.BlendMode = BlendMode;
 								Mtl.isM2 = false;
 
-								if (Shader == 23) // Shader 23 (pixelShader 20) has vertex colors that need to be injected
+								if (Shader == 23 || Shader == 6 || Shader == 7 || Shader == 13 || Shader == 15 || Shader == 20) // The following shaders have multiple blended textures that require vertex colors
 								{
-									Mtl.Instance->SetStaticSwitchParameterValueEditorOnly(FName("isShader20"), true);
 									if (!isInjected)
 									{
 										InjectVertexColors(Mesh, JsonObject);
 										isInjected = true;
 									}
 
-									Mtl.ParamToTexName.Add(TEXT("Texture2"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture2"))]);
-									Mtl.ParamToTexName.Add(TEXT("Texture3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture3"))]);
-									Mtl.ParamToTexName.Add(TEXT("Color3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("color3"))]);
-									Mtl.ParamToTexName.Add(TEXT("Flags3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("flags3"))]);
+									Mtl.Instance->SetStaticSwitchParameterValueEditorOnly(FName("isMultiLayer"), true);
+									if (Shader == 23) // MapObjUnkShader
+									{
+										Mtl.ParamToTexName.Add(TEXT("Texture2"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture2"))]);
+										Mtl.ParamToTexName.Add(TEXT("Texture3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture3"))]);
+										Mtl.ParamToTexName.Add(TEXT("Color3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("color3"))]);
+										Mtl.ParamToTexName.Add(TEXT("Flags3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("flags3"))]);
 
-									TArray<int> HeightFDIDs;
-									const TArray<TSharedPtr<FJsonValue>> &RuntimeDataArray = MtlObject->GetArrayField(TEXT("runtimeData"));
-									for (const TSharedPtr<FJsonValue> &Val : RuntimeDataArray)
-										HeightFDIDs.Add((int)Val->AsNumber());
+										TArray<int> HeightFDIDs;
+										const TArray<TSharedPtr<FJsonValue>> &RuntimeDataArray = MtlObject->GetArrayField(TEXT("runtimeData"));
+										for (const TSharedPtr<FJsonValue> &Val : RuntimeDataArray)
+											HeightFDIDs.Add((int)Val->AsNumber());
 
-									for (int j = 0; j < 4; j++)
-										Mtl.ParamToTexName.Add(FName(*FString::Printf(TEXT("Height%d"), j)), Json.FDIDToTexName[HeightFDIDs[j]]);
+										for (int j = 0; j < 4; j++)
+											Mtl.ParamToTexName.Add(FName(*FString::Printf(TEXT("Height%d"), j)), Json.FDIDToTexName[HeightFDIDs[j]]);
+									}
+									else // TwoLayer Shading
+									{
+										Mtl.Instance->SetStaticSwitchParameterValueEditorOnly(FName("isTwoLayer"), true);
+										Mtl.ParamToTexName.Add(TEXT("Texture1"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture1"))]);
+										Mtl.ParamToTexName.Add(TEXT("Texture2"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture2"))]);
+									}
 								}
 								else
 									Mtl.ParamToTexName.Add(TEXT("Texture1"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture1"))]);
@@ -887,7 +896,7 @@ JsonData FWoWLandscapeImporterModule::ParseModelJson(const TSharedPtr<FJsonObjec
 				if (TextureObject->GetIntegerField(TEXT("fileDataID")) == FDID)
 				{
 					FString MtlName = TextureObject->GetStringField(TEXT("mtlName"));
-					if (!Json.MtlNameToMtlObject.Contains(MtlName) || Shader == 23) // First come, first served with exception of shader 23
+					if (!Json.MtlNameToMtlObject.Contains(MtlName) || Shader == 23 || Shader == 13) // First come, first served with exception of shader 23
 						Json.MtlNameToMtlObject.Add(MtlName, MtlObject);
 					break;
 				}
@@ -907,9 +916,14 @@ void FWoWLandscapeImporterModule::InjectVertexColors(UStaticMesh *Mesh, const TS
 		TSharedPtr<FJsonObject> GroupObj = GroupVal->AsObject();
 
 		const TArray<TSharedPtr<FJsonValue>> *ColorArray = nullptr;
-		// Prefer colors2 for WMO Shader 20, fallback to vertexColours
 		if (!GroupObj->TryGetArrayField(TEXT("colors2"), ColorArray))
-			GroupObj->TryGetArrayField(TEXT("vertexColours"), ColorArray);
+		{
+			const TArray<TSharedPtr<FJsonValue>> *OuterArray = nullptr;
+			if (GroupObj->TryGetArrayField(TEXT("vertexColours"), OuterArray) && OuterArray->Num() > 0)
+				ColorArray = &((*OuterArray).Last()->AsArray()); // Get the last vertex color array as this is used for TwoLayerShader
+		}
+		if (!ColorArray)
+			continue;
 
 		for (int c = 0; c < ColorArray->Num(); c += 4)
 		{
@@ -924,8 +938,8 @@ void FWoWLandscapeImporterModule::InjectVertexColors(UStaticMesh *Mesh, const TS
 	FMeshDescription *MeshDescription = Mesh->GetMeshDescription(0);
 	FStaticMeshAttributes Attributes(*MeshDescription);
 
-	TVertexInstanceAttributesRef<FVector4f> InstanceColors = Attributes.GetVertexInstanceColors();
 	Attributes.Register();
+	TVertexInstanceAttributesRef<FVector4f> InstanceColors = Attributes.GetVertexInstanceColors();
 	MeshDescription->VertexInstanceAttributes().RegisterAttribute<FVector4f>(MeshAttribute::VertexInstance::Color, 1, FVector4f(1.0f, 1.0f, 1.0f, 1.0f));
 	InstanceColors = Attributes.GetVertexInstanceColors();
 
@@ -1086,10 +1100,29 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString Materi
 	UMaterial *ModelMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPackagePath));
 	ModelMaterial->OpacityMaskClipValue = 0.5f;
 
-	UMaterialExpressionTextureSampleParameter2D *TextureSample0 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -800, 0, ModelMaterial);
+	int Section0 = 700;
+	int Section1 = 1200;
+	UMaterialExpressionVertexColor *VertexColorNode = CreateNode(NewObject<UMaterialExpressionVertexColor>(ModelMaterial), -1200 - Section1, -200, ModelMaterial);
+	UMaterialExpressionTextureSampleParameter2D *TextureSample0 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 0, ModelMaterial);
 	TextureSample0->ParameterName = FName("Texture1");
+	UMaterialExpressionTextureSampleParameter2D *TextureSample1 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 250, ModelMaterial);
+	TextureSample1->ParameterName = FName("Texture2");
+	UMaterialExpressionTextureSampleParameter2D *TextureSample2 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 500, ModelMaterial);
+	TextureSample2->ParameterName = FName("Texture3");
+	UMaterialExpressionTextureSampleParameter2D *TextureSample3 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 750, ModelMaterial);
+	TextureSample3->ParameterName = FName("Color3");
+	UMaterialExpressionTextureSampleParameter2D *TextureSample4 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 1000, ModelMaterial);
+	TextureSample4->ParameterName = FName("Flags3");
+	UMaterialExpressionTextureSampleParameter2D *HeightSample0 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 1250, ModelMaterial);
+	HeightSample0->ParameterName = FName("Height0");
+	UMaterialExpressionTextureSampleParameter2D *HeightSample1 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 1500, ModelMaterial);
+	HeightSample1->ParameterName = FName("Height1");
+	UMaterialExpressionTextureSampleParameter2D *HeightSample2 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 1750, ModelMaterial);
+	HeightSample2->ParameterName = FName("Height2");
+	UMaterialExpressionTextureSampleParameter2D *HeightSample3 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 2000, ModelMaterial);
+	HeightSample3->ParameterName = FName("Height3");
 
-	UMaterialExpressionConstant *ZeroConstant = CreateNode(NewObject<UMaterialExpressionConstant>(ModelMaterial), -950, 800, ModelMaterial);
+	UMaterialExpressionConstant *ZeroConstant = CreateNode(NewObject<UMaterialExpressionConstant>(ModelMaterial), -900, 800, ModelMaterial);
 	ZeroConstant->R = 0.0f;
 
 	auto AddInput = [&](UMaterialExpressionCustom *CustomNode, const char *Name, UMaterialExpression *Expression, int OutputIndex = 0)
@@ -1118,7 +1151,6 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString Materi
 	};
 
 	// -- Foliage --
-	int Section0 = 700;
 	UClass *PerInstanceFadeAmountClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.MaterialExpressionPerInstanceFadeAmount"));
 	UMaterialExpression *PerInstanceFadeAmount = CreateNode(Cast<UMaterialExpression>(NewObject<UObject>(ModelMaterial, PerInstanceFadeAmountClass)), -1100, Section0 + 370, ModelMaterial);
 
@@ -1193,43 +1225,23 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString Materi
 	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_WorldPositionOffset)->Expression = WindSwitch;
 
 	// -- WMO Shader 20 --
-	int Section1 = 1200;
-	UMaterialExpressionVertexColor *VertexColorNode = CreateNode(NewObject<UMaterialExpressionVertexColor>(ModelMaterial), -1200 - Section1, 0, ModelMaterial);
-	UMaterialExpressionTextureSampleParameter2D *TextureSample1 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 200, ModelMaterial);
-	TextureSample1->ParameterName = FName("Texture2");
-	UMaterialExpressionTextureSampleParameter2D *TextureSample2 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 450, ModelMaterial);
-	TextureSample2->ParameterName = FName("Texture3");
-	UMaterialExpressionTextureSampleParameter2D *TextureSample3 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 700, ModelMaterial);
-	TextureSample3->ParameterName = FName("Color3");
-	UMaterialExpressionTextureSampleParameter2D *TextureSample4 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 950, ModelMaterial);
-	TextureSample4->ParameterName = FName("Flags3");
-	UMaterialExpressionTextureSampleParameter2D *HeightSample0 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 1200, ModelMaterial);
-	HeightSample0->ParameterName = FName("Height0");
-	UMaterialExpressionTextureSampleParameter2D *HeightSample1 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 1450, ModelMaterial);
-	HeightSample1->ParameterName = FName("Height1");
-	UMaterialExpressionTextureSampleParameter2D *HeightSample2 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 1700, ModelMaterial);
-	HeightSample2->ParameterName = FName("Height2");
-	UMaterialExpressionTextureSampleParameter2D *HeightSample3 = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2D>(ModelMaterial), -1200 - Section1, 1950, ModelMaterial);
-	HeightSample3->ParameterName = FName("Height3");
-
-	// Competitive Blend Logic (HLSL)
-	UMaterialExpressionCustom *CustomBlend = CreateNode(NewObject<UMaterialExpressionCustom>(ModelMaterial), -400 - Section1, 400, ModelMaterial);
-	CustomBlend->Description = TEXT("WMOShader20_CompetitiveBlend");
-	CustomBlend->OutputType = CMOT_Float4;
-	CustomBlend->Inputs.Empty();
-	AddInput(CustomBlend, "Weights", VertexColorNode);
-	AddInput(CustomBlend, "D0", TextureSample1, 5);
-	AddInput(CustomBlend, "D1", TextureSample2, 5);
-	AddInput(CustomBlend, "D2", TextureSample3, 5);
-	AddInput(CustomBlend, "D3", TextureSample4, 5);
-	AddInput(CustomBlend, "H0", HeightSample0, 4);
-	AddInput(CustomBlend, "H1", HeightSample1, 4);
-	AddInput(CustomBlend, "H2", HeightSample2, 4);
-	AddInput(CustomBlend, "H3", HeightSample3, 4);
-	CustomBlend->PostEditChange();
+	UMaterialExpressionCustom *Shader20Blend = CreateNode(NewObject<UMaterialExpressionCustom>(ModelMaterial), -400 - Section1, 400, ModelMaterial);
+	Shader20Blend->Description = TEXT("WMOShader20_Blend");
+	Shader20Blend->OutputType = CMOT_Float4;
+	Shader20Blend->Inputs.Empty();
+	AddInput(Shader20Blend, "Weights", VertexColorNode);
+	AddInput(Shader20Blend, "D0", TextureSample1, 5);
+	AddInput(Shader20Blend, "D1", TextureSample2, 5);
+	AddInput(Shader20Blend, "D2", TextureSample3, 5);
+	AddInput(Shader20Blend, "D3", TextureSample4, 5);
+	AddInput(Shader20Blend, "H0", HeightSample0, 4);
+	AddInput(Shader20Blend, "H1", HeightSample1, 4);
+	AddInput(Shader20Blend, "H2", HeightSample2, 4);
+	AddInput(Shader20Blend, "H3", HeightSample3, 4);
+	Shader20Blend->PostEditChange();
 
 	// Implementation of height-suppression blend
-	CustomBlend->Code = TEXT(
+	Shader20Blend->Code = TEXT(
 		"float weights[4];\n"
 		"weights[0] = Weights.r; // Texture2 = Red channel\n"
 		"weights[1] = Weights.g; // Texture3 = Green channel\n"
@@ -1256,17 +1268,27 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString Materi
 		"\n"
 		"return result / max(totalWeight, 0.0001);");
 
+	// -- WMO TwoLayer --
+	UMaterialExpressionLinearInterpolate *TwoLayerLerp = CreateNode(NewObject<UMaterialExpressionLinearInterpolate>(ModelMaterial), -400 - Section1, 200, ModelMaterial);
+	TwoLayerLerp->A.Expression = TextureSample1;
+	TwoLayerLerp->A.OutputIndex = 5;
+	TwoLayerLerp->B.Expression = TextureSample0;
+	TwoLayerLerp->B.OutputIndex = 5;
+	TwoLayerLerp->Alpha.Expression = VertexColorNode;
+	TwoLayerLerp->Alpha.OutputIndex = 4;
+
 	// Shader switches for controlling output of WMO/M2 materials
-	UMaterialExpressionStaticSwitchParameter *isShader20Switch = CreateStaticSwitch(FName("isShader20"), CustomBlend, 0, TextureSample0, 5, -1150, 400, false);
+	UMaterialExpressionStaticSwitchParameter *isTwoLayerSwitch = CreateStaticSwitch(FName("isTwoLayer"), TwoLayerLerp, 0, Shader20Blend, 0, -1150, 200, false);
+	UMaterialExpressionStaticSwitchParameter *isMultiLayerSwitch = CreateStaticSwitch(FName("isMultiLayer"), isTwoLayerSwitch, 0, TextureSample0, 5, -1150, 400, false);
 	UMaterialExpressionComponentMask *AlphaMask = CreateNode(NewObject<UMaterialExpressionComponentMask>(ModelMaterial), -900, 325, ModelMaterial);
-	AlphaMask->Input.Expression = isShader20Switch;
+	AlphaMask->Input.Expression = isMultiLayerSwitch;
 	AlphaMask->R = false;
 	AlphaMask->G = false;
 	AlphaMask->B = false;
 	AlphaMask->A = true;
 	OpacityMultiply->A.Expression = AlphaMask;
 	UMaterialExpressionComponentMask *BaseMask = CreateNode(NewObject<UMaterialExpressionComponentMask>(ModelMaterial), -900, 475, ModelMaterial);
-	BaseMask->Input.Expression = isShader20Switch;
+	BaseMask->Input.Expression = isMultiLayerSwitch;
 	BaseMask->R = true;
 	BaseMask->G = true;
 	BaseMask->B = true;
@@ -1299,6 +1321,7 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString Materi
 	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_Specular)->Expression = SpecularMultiply;
 	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_Roughness)->Expression = RoughnessParameter;
 	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_EmissiveColor)->Expression = isEmissive;
+	ModelMaterial->GetExpressionInputForProperty(EMaterialProperty::MP_SubsurfaceColor)->Expression = BaseMask;
 
 	ModelMaterial->MarkPackageDirty();
 	ModelMaterial->PostEditChange();
