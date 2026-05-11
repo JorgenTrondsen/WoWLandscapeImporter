@@ -131,9 +131,9 @@ TSharedRef<SDockTab> FWoWLandscapeImporterModule::OnSpawnPluginTab(const FSpawnT
 		.TabRole(ETabRole::NomadTab)
 			[SNew(SBox)
 				 .Padding(FMargin(10.0f))
-					 [SNew(SVerticalBox) + SVerticalBox::Slot().AutoHeight().Padding(0, 2)[SNew(STextBlock).Text(LOCTEXT("WoWLandscapeImporterTitle", "WoW Importer")).Font(FCoreStyle::GetDefaultFontStyle("Bold", 16)).Justification(ETextJustify::Center)] + SVerticalBox::Slot().AutoHeight().Padding(0, 3)[SNew(STextBlock).Text(LOCTEXT("ImportDescription", "Select directory:")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 12)).Justification(ETextJustify::Center)] + SVerticalBox::Slot().AutoHeight().Padding(0, 5)[SNew(SButton).Text(LOCTEXT("ImportButtonText", "Import")).HAlign(HAlign_Center).VAlign(VAlign_Center).OnClicked_Raw(this, &FWoWLandscapeImporterModule::OnImportButtonClicked).ContentPadding(FMargin(12, 6))] + SVerticalBox::Slot().AutoHeight().Padding(0, 10)[SNew(SHorizontalBox) + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)[SNew(STextBlock).Text(LOCTEXT("WPGridSizeLabel", "World Partition Grid Size:")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))] + SHorizontalBox::Slot().AutoWidth()[SNew(SSpinBox<int32>).MinValue(1).MaxValue(10).Value_Lambda([this]()
-																																																																																																																																																																																																																																																																																				   { return WPGridSize; })
-																																																																																																																																																																																																																																																																						   .OnValueChanged_Lambda([this](int32 NewValue)
+					 [SNew(SVerticalBox) + SVerticalBox::Slot().AutoHeight().Padding(0, 2)[SNew(STextBlock).Text(LOCTEXT("WoWLandscapeImporterTitle", "WoW Importer")).Font(FCoreStyle::GetDefaultFontStyle("Bold", 16)).Justification(ETextJustify::Center)] + SVerticalBox::Slot().AutoHeight().Padding(0, 3)[SNew(STextBlock).Text(LOCTEXT("ImportDescription", "Select directory:")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 12)).Justification(ETextJustify::Center)] + SVerticalBox::Slot().AutoHeight().Padding(0, 5)[SNew(SButton).Text(LOCTEXT("ImportButtonText", "Import")).HAlign(HAlign_Center).VAlign(VAlign_Center).OnClicked_Raw(this, &FWoWLandscapeImporterModule::OnImportButtonClicked).ContentPadding(FMargin(12, 6))] + SVerticalBox::Slot().AutoHeight().Padding(0, 10)[SNew(SHorizontalBox) + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)[SNew(STextBlock).Text(LOCTEXT("WPGridSizeLabel", "World Partition Grid Size:")).Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))] + SHorizontalBox::Slot().AutoWidth()[SNew(SSpinBox<int>).MinValue(1).MaxValue(10).Value_Lambda([this]()
+																																																																																																																																																																																																																																																																																				 { return WPGridSize; })
+																																																																																																																																																																																																																																																																						   .OnValueChanged_Lambda([this](int NewValue)
 																																																																																																																																																																																																																																																																												  { WPGridSize = NewValue; })
 																																																																																																																																																																																																																																																																						   .MinDesiredWidth(60.0f)]] +
 					  SVerticalBox::Slot()
@@ -253,7 +253,7 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 		for (int Row = 0; Row < TileRows; Row++)
 			TileGrid[Row].SetNum(TileColumns);
 
-		TMap<int, TPair<FString, int>> TexturePaths;
+		TMap<int, TTuple<FString, FString, int>> TexturePaths;
 		// Collect filedata and metadata
 		for (int i = 0; i < HeightmapFiles.Num(); i++)
 		{
@@ -284,12 +284,13 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 			for (const TSharedPtr<FJsonValue> &LayerValue : Layers)
 			{
 				TSharedPtr<FJsonObject> LayerObject = LayerValue->AsObject();
-				FString TexturePath = LayerObject->GetStringField(TEXT("file")).Replace(TEXT("\\"), TEXT("/"));
-				TexturePaths.FindOrAdd(LayerObject->GetNumberField(TEXT("effectID")), TPair<FString, int>(TexturePath, 0)).Value++;
+				FString TexPathBase = LayerObject->GetStringField(TEXT("file")).Replace(TEXT("\\"), TEXT("/"));
+				FString TexPathHeight = LayerObject->GetStringField(TEXT("heightFile")).Replace(TEXT("\\"), TEXT("/"));
+				TexturePaths.FindOrAdd(LayerObject->GetNumberField(TEXT("effectID")), TTuple<FString, FString, int>(TexPathBase, TexPathHeight, 0)).Get<2>()++;
 
 				int ChunkIndex = LayerObject->GetNumberField(TEXT("chunkIndex"));
 				Layer NewLayer;
-				NewLayer.LayerName = FName(FPaths::GetBaseFilename(TexturePath));
+				NewLayer.LayerName = FName(FPaths::GetBaseFilename(TexPathBase));
 				NewLayer.ImageIndex = LayerObject->GetIntegerField(TEXT("imageIndex"));
 				NewLayer.ChannelIndex = LayerObject->GetIntegerField(TEXT("channelIndex"));
 				NewTile.Chunks[ChunkIndex].Layers.Add(NewLayer);
@@ -504,21 +505,21 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 	}
 }
 
-void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &TexturePaths, TArray<FString> &FoliageFiles, TArray<FString> &FoliageJSONs, UMaterial *ModelMaterial)
+void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TTuple<FString, FString, int>> &TexturePaths, TArray<FString> &FoliageFiles, TArray<FString> &FoliageJSONs, UMaterial *ModelMaterial)
 {
 	// Find the Map Key with the highest count for each Texture Path
 	TMap<FString, int> BestKeys;
-	for (const auto &Elem : TexturePaths)
+	for (auto &Elem : TexturePaths)
 	{
-		int *BestKey = BestKeys.Find(Elem.Value.Key);
-		if (!BestKey || Elem.Value.Value > TexturePaths[*BestKey].Value)
-			BestKeys.Add(Elem.Value.Key, Elem.Key); // Add or overwrite with the new best
+		int *BestKey = BestKeys.Find(Elem.Value.Get<0>());
+		if (!BestKey || Elem.Value.Get<2>() > TexturePaths[*BestKey].Get<2>())
+			BestKeys.Add(Elem.Value.Get<0>(), Elem.Key); // Add or overwrite with the new best
 	}
 
 	// Remove any entries that are not the chosen "best" key
 	for (auto It = TexturePaths.CreateIterator(); It; ++It)
 	{
-		if (BestKeys[It->Value.Key] != It->Key)
+		if (BestKeys[It->Value.Get<0>()] != It->Key)
 		{
 			// Remove the foliage json file that corresponds to the removed effectID key.
 			FoliageJSONs.Remove(FString::Printf(TEXT("layerinfo%d.json"), It->Key));
@@ -532,13 +533,18 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &T
 	ImportParams.bIsAutomated = true;
 	ImportParams.bReplaceExisting = true;
 
-	TArray<UE::Interchange::FAssetImportResultRef> ImportResults;
-	for (const auto &TexturePair : TexturePaths)
+	TArray<TTuple<UE::Interchange::FAssetImportResultRef, UE::Interchange::FAssetImportResultRef>> ImportResults;
+	for (auto &TextureTuple : TexturePaths)
 	{
-		const FString DestinationDirectory = FString::Printf(TEXT("/Game/Assets/WoWExport/%s"), *FPaths::GetPath(TexturePair.Value.Key).Replace(TEXT("../"), TEXT("")));
-		UInterchangeSourceData *SourceData = UInterchangeManager::CreateSourceData(FPaths::ConvertRelativePathToFull(DirectoryPath, TexturePair.Value.Key.RightChop(3)));
+		FString DestinationDirectory = FString::Printf(TEXT("/Game/Assets/WoWExport/%s"), *FPaths::GetPath(TextureTuple.Value.Get<0>()).Replace(TEXT("../"), TEXT("")));
+		UInterchangeSourceData *SourceData = UInterchangeManager::CreateSourceData(FPaths::ConvertRelativePathToFull(DirectoryPath, TextureTuple.Value.Get<0>().RightChop(3)));
 		UE::Interchange::FAssetImportResultRef ImportResult = InterchangeManager.ImportAssetAsync(DestinationDirectory, SourceData, ImportParams);
-		ImportResults.Add(ImportResult);
+
+		DestinationDirectory = FString::Printf(TEXT("/Game/Assets/WoWExport/%s"), *FPaths::GetPath(TextureTuple.Value.Get<1>()).Replace(TEXT("../"), TEXT("")));
+		SourceData = UInterchangeManager::CreateSourceData(FPaths::ConvertRelativePathToFull(DirectoryPath, TextureTuple.Value.Get<1>().RightChop(3)));
+		UE::Interchange::FAssetImportResultRef ImportResultHeight = InterchangeManager.ImportAssetAsync(DestinationDirectory, SourceData, ImportParams);
+
+		ImportResults.Add(MakeTuple(ImportResult, ImportResultHeight));
 	}
 
 	{
@@ -546,16 +552,14 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &T
 		SlowTask.MakeDialog();
 
 		int Index = 0;
-		for (const auto &TexturePair : TexturePaths)
+		for (auto &TextureTuple : TexturePaths)
 		{
 			SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("ImportingLayer", "Importing Layer: {0}"), Index));
-			const UE::Interchange::FAssetImportResultRef &ImportResult = ImportResults[Index];
+			const UE::Interchange::FAssetImportResultRef &ImportResult = ImportResults[Index].Get<0>();
+			const UE::Interchange::FAssetImportResultRef &ImportResultHeight = ImportResults[Index].Get<1>();
 
-			ImportResult->WaitUntilDone();
-			UObject *ImportedObject = ImportResult->GetImportedObjects()[0];
-
-			const FString DestinationDirectory = FString::Printf(TEXT("/Game/Assets/WoWExport/%s"), *FPaths::GetPath(TexturePair.Value.Key).Replace(TEXT("../"), TEXT("")));
-			FString TextureFileName = FPaths::GetBaseFilename(TexturePair.Value.Key);
+			const FString DestinationDirectory = FString::Printf(TEXT("/Game/Assets/WoWExport/%s"), *FPaths::GetPath(TextureTuple.Value.Get<0>()).Replace(TEXT("../"), TEXT("")));
+			FString TextureFileName = FPaths::GetBaseFilename(TextureTuple.Value.Get<0>());
 			FString LayerInfoName = FString::Printf(TEXT("LI_%s"), *TextureFileName);
 
 			UPackage *LayerInfoPackage = CreatePackage(*(DestinationDirectory + TEXT("/") + LayerInfoName));
@@ -567,9 +571,15 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &T
 
 			LayerMetadata Metadata;
 			Metadata.LayerInfo = LayerInfo;
-			Metadata.LayerTexture = Cast<UTexture2D>(ImportedObject);
+			ImportResult->WaitUntilDone();
+			ImportResultHeight->WaitUntilDone();
+			if (ImportResult->GetImportedObjects().Num() > 0)
+				Metadata.LayerTexture = Cast<UTexture2D>(ImportResult->GetImportedObjects()[0]);
+			if (ImportResultHeight->GetImportedObjects().Num() > 0)
+				Metadata.LayerTextureHeight = Cast<UTexture2D>(ImportResultHeight->GetImportedObjects()[0]);
 			Metadata.FoliageAsset = nullptr;
 			LayerMetadataMap.Add(LayerInfo->LayerName, Metadata);
+
 			Index++;
 		}
 	}
@@ -585,7 +595,7 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &T
 		TArray<FString> FoliageNames;
 		const TSharedPtr<FJsonObject> DoodadModelIDsObject = JsonObject->GetObjectField(TEXT("DoodadModelIDs"));
 
-		for (const TPair<FString, TSharedPtr<FJsonValue>> &Pair : DoodadModelIDsObject->Values)
+		for (const TTuple<FString, TSharedPtr<FJsonValue>> &Pair : DoodadModelIDsObject->Values)
 			FoliageNames.Add(Pair.Value->AsObject()->GetStringField(TEXT("fileName")).Replace(TEXT(".obj"), TEXT("")));
 
 		// Find which imported foliage meshes correspond to these names
@@ -604,10 +614,10 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &T
 
 		if (FoliageMeshes.Num() > 0)
 		{
-			LayerMetadata *LayerMetaData = LayerMetadataMap.Find(FName(*FPaths::GetBaseFilename(TexturePaths[EffectID].Key)));
+			LayerMetadata *LayerMetaData = LayerMetadataMap.Find(FName(*FPaths::GetBaseFilename(TexturePaths[EffectID].Get<0>())));
 
 			FString PackagePath = FPackageName::GetLongPackagePath(LayerMetaData->LayerInfo->GetOutermost()->GetName());
-			FString AssetName = "GT_" + FPaths::GetBaseFilename(TexturePaths[EffectID].Key);
+			FString AssetName = "GT_" + FPaths::GetBaseFilename(TexturePaths[EffectID].Get<0>());
 
 			UPackage *GrassPackage = CreatePackage(*(PackagePath + TEXT("/") + AssetName));
 			ULandscapeGrassType *FoliageAsset = NewObject<ULandscapeGrassType>(GrassPackage, *AssetName, RF_Public | RF_Standalone);
@@ -617,7 +627,7 @@ void FWoWLandscapeImporterModule::ImportLayers(TMap<int, TPair<FString, int>> &T
 			{
 				FGrassVariety Variety;
 				Variety.GrassMesh = Mesh;
-				Variety.GrassDensity = FPerPlatformFloat(200.0f);
+				Variety.GrassDensity = FPerPlatformFloat(20.0f);
 				Variety.ScaleX = FFloatInterval(160.0f, 160.0f);
 				Variety.StartCullDistance = FPerPlatformInt(34500);
 				Variety.EndCullDistance = FPerPlatformInt(35000);
@@ -745,10 +755,14 @@ TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> 
 									Mtl.Instance->SetStaticSwitchParameterValueEditorOnly(FName("isMultiLayer"), true);
 									if (Shader == 23) // MapObjUnkShader
 									{
-										Mtl.ParamToTexName.Add(TEXT("Texture2"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture2"))]);
-										Mtl.ParamToTexName.Add(TEXT("Texture3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture3"))]);
-										Mtl.ParamToTexName.Add(TEXT("Color3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("color3"))]);
-										Mtl.ParamToTexName.Add(TEXT("Flags3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("flags3"))]);
+										if (Json.FDIDToTexName.Contains(MtlObject->GetIntegerField(TEXT("texture2"))))
+											Mtl.ParamToTexName.Add(TEXT("Texture2"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture2"))]);
+										if (Json.FDIDToTexName.Contains(MtlObject->GetIntegerField(TEXT("texture3"))))
+											Mtl.ParamToTexName.Add(TEXT("Texture3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("texture3"))]);
+										if (Json.FDIDToTexName.Contains(MtlObject->GetIntegerField(TEXT("color3"))))
+											Mtl.ParamToTexName.Add(TEXT("Color3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("color3"))]);
+										if (Json.FDIDToTexName.Contains(MtlObject->GetIntegerField(TEXT("flags3"))))
+											Mtl.ParamToTexName.Add(TEXT("Flags3"), Json.FDIDToTexName[MtlObject->GetIntegerField(TEXT("flags3"))]);
 
 										TArray<int> HeightFDIDs;
 										const TArray<TSharedPtr<FJsonValue>> &RuntimeDataArray = MtlObject->GetArrayField(TEXT("runtimeData"));
@@ -756,7 +770,8 @@ TArray<UStaticMesh *> FWoWLandscapeImporterModule::ImportModels(TArray<FString> 
 											HeightFDIDs.Add((int)Val->AsNumber());
 
 										for (int j = 0; j < 4; j++)
-											Mtl.ParamToTexName.Add(FName(*FString::Printf(TEXT("Height%d"), j)), Json.FDIDToTexName[HeightFDIDs[j]]);
+											if (Json.FDIDToTexName.Contains(HeightFDIDs[j]))
+												Mtl.ParamToTexName.Add(FName(*FString::Printf(TEXT("Height%d"), j)), Json.FDIDToTexName[HeightFDIDs[j]]);
 									}
 									else // TwoLayer Shading
 									{
@@ -1132,7 +1147,7 @@ UMaterial *FWoWLandscapeImporterModule::CreateModelMaterial(const FString Materi
 		Input.Input.Expression = Expression;
 		Input.Input.OutputIndex = OutputIndex;
 	};
-	auto CreateStaticSwitch = [&](const FName &ParamName, UMaterialExpression *TrueExp, int32 TrueIdx, UMaterialExpression *FalseExp, int32 FalseIdx, int32 X, int32 Y, bool bDefault) -> UMaterialExpressionStaticSwitchParameter *
+	auto CreateStaticSwitch = [&](const FName &ParamName, UMaterialExpression *TrueExp, int TrueIdx, UMaterialExpression *FalseExp, int FalseIdx, int X, int Y, bool bDefault) -> UMaterialExpressionStaticSwitchParameter *
 	{
 		UMaterialExpressionStaticSwitchParameter *Switch = CreateNode(NewObject<UMaterialExpressionStaticSwitchParameter>(ModelMaterial), X, Y, ModelMaterial);
 		Switch->ParameterName = ParamName;
@@ -1363,22 +1378,22 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 	UMaterial *LandscapeMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPackagePath));
 	LandscapeMaterial->bUseMaterialAttributes = true;
 
-	FString TextureArrayName = FString::Printf(TEXT("TEX_%s_Array_256"), *BaseName);
-	FString TextureArrayPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *TextureArrayName);
-	AssetTools.CreateAsset(TextureArrayName, MaterialDirectory, UTexture2DArray::StaticClass(), nullptr);
-	UTexture2DArray *TextureArray256Asset = Cast<UTexture2DArray>(UEditorAssetLibrary::LoadAsset(TextureArrayPackagePath));
+	FString TexArrayName = FString::Printf(TEXT("TEX_%s_Array_256"), *BaseName);
+	FString TexArrayPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *TexArrayName);
+	AssetTools.CreateAsset(TexArrayName, MaterialDirectory, UTexture2DArray::StaticClass(), nullptr);
+	UTexture2DArray *TexArray256Asset = Cast<UTexture2DArray>(UEditorAssetLibrary::LoadAsset(TexArrayPackagePath));
 
-	TextureArrayName = FString::Printf(TEXT("TEX_%s_Array_512"), *BaseName);
-	TextureArrayPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *TextureArrayName);
-	AssetTools.CreateAsset(TextureArrayName, MaterialDirectory, UTexture2DArray::StaticClass(), nullptr);
-	UTexture2DArray *TextureArray512Asset = Cast<UTexture2DArray>(UEditorAssetLibrary::LoadAsset(TextureArrayPackagePath));
+	TexArrayName = FString::Printf(TEXT("TEX_%s_Array_512"), *BaseName);
+	TexArrayPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *TexArrayName);
+	AssetTools.CreateAsset(TexArrayName, MaterialDirectory, UTexture2DArray::StaticClass(), nullptr);
+	UTexture2DArray *TexArray512Asset = Cast<UTexture2DArray>(UEditorAssetLibrary::LoadAsset(TexArrayPackagePath));
 
-	TextureArrayName = FString::Printf(TEXT("TEX_%s_Array_1024"), *BaseName);
-	TextureArrayPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *TextureArrayName);
-	AssetTools.CreateAsset(TextureArrayName, MaterialDirectory, UTexture2DArray::StaticClass(), nullptr);
-	UTexture2DArray *TextureArray1024Asset = Cast<UTexture2DArray>(UEditorAssetLibrary::LoadAsset(TextureArrayPackagePath));
+	TexArrayName = FString::Printf(TEXT("TEX_%s_Array_1024"), *BaseName);
+	TexArrayPackagePath = FString::Printf(TEXT("%s/%s"), *MaterialDirectory, *TexArrayName);
+	AssetTools.CreateAsset(TexArrayName, MaterialDirectory, UTexture2DArray::StaticClass(), nullptr);
+	UTexture2DArray *TexArray1024Asset = Cast<UTexture2DArray>(UEditorAssetLibrary::LoadAsset(TexArrayPackagePath));
 
-	int32 Section0 = -4300;
+	int Section0 = -4300;
 	UMaterialExpressionLandscapeLayerCoords *CoordsNode = CreateNode(NewObject<UMaterialExpressionLandscapeLayerCoords>(LandscapeMaterial), Section0, 0, LandscapeMaterial);
 
 	UMaterialExpressionScalarParameter *NearTilingSize = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial), Section0, 150, LandscapeMaterial);
@@ -1438,17 +1453,17 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 	DepthFadeReroute->NodeColor = FLinearColor::Green;
 	DepthFadeReroute->Input.Expression = SaturateNode;
 
-	int32 Section1 = -2800;
+	int Section1 = -2800;
 	UMaterialExpressionLandscapeLayerBlend *LayerBlendNode = CreateNode(NewObject<UMaterialExpressionLandscapeLayerBlend>(LandscapeMaterial), Section1 + 1400, 0, LandscapeMaterial);
 
 	UMaterialExpressionScalarParameter *BlackValueNode = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial), Section1 + 1000, -250, LandscapeMaterial);
 	BlackValueNode->ParameterName = FName("BlackValue");
 	BlackValueNode->Group = FName("3PointLevels");
-	BlackValueNode->DefaultValue = 0.4f;
+	BlackValueNode->DefaultValue = 0.0f;
 	UMaterialExpressionScalarParameter *GrayValueNode = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial), Section1 + 1000, -175, LandscapeMaterial);
 	GrayValueNode->ParameterName = FName("GrayValue");
 	GrayValueNode->Group = FName("3PointLevels");
-	GrayValueNode->DefaultValue = 0.6f;
+	GrayValueNode->DefaultValue = 0.5f;
 	UMaterialExpressionScalarParameter *WhiteValueNode = CreateNode(NewObject<UMaterialExpressionScalarParameter>(LandscapeMaterial), Section1 + 1000, -100, LandscapeMaterial);
 	WhiteValueNode->ParameterName = FName("WhiteValue");
 	WhiteValueNode->Group = FName("3PointLevels");
@@ -1470,17 +1485,17 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 	GrassOutputNode->GrassTypes.RemoveAt(0);
 
 	// Loop through our stored layer data to create and connect texture samplers
-	int32 NodeOffsetY = 0;
-	int32 TextureArrayIndex256 = 0, TextureArrayIndex512 = 0, TextureArrayIndex1024 = 0;
+	int NodeOffsetY = 0;
+	int TexArrayIndex256 = 0, TexArrayIndex512 = 0, TexArrayIndex1024 = 0;
 	for (auto const &[LayerName, LayerMetadata] : LayerMetadataMap)
 	{
 		if (LayerMetadata.FoliageAsset)
 		{
-			UMaterialExpressionLandscapeLayerSample *LayerSampleNode = CreateNode(NewObject<UMaterialExpressionLandscapeLayerSample>(LandscapeMaterial), Section0, 900 + (GrassOutputNode->GrassTypes.Num() * 130), LandscapeMaterial);
-			LayerSampleNode->ParameterName = LayerName;
+			UMaterialExpressionLandscapeLayerSample *LayerSample = CreateNode(NewObject<UMaterialExpressionLandscapeLayerSample>(LandscapeMaterial), Section0, 900 + (GrassOutputNode->GrassTypes.Num() * 130), LandscapeMaterial);
+			LayerSample->ParameterName = LayerName;
 
 			UMaterialExpressionSmoothStep *SmoothStepNode = CreateNode(NewObject<UMaterialExpressionSmoothStep>(LandscapeMaterial), Section0 + 250, 900 + (GrassOutputNode->GrassTypes.Num() * 130), LandscapeMaterial);
-			SmoothStepNode->Value.Expression = LayerSampleNode;
+			SmoothStepNode->Value.Expression = LayerSample;
 			SmoothStepNode->ConstMin = 0.4f;
 			SmoothStepNode->ConstMax = 1.0f;
 
@@ -1490,6 +1505,10 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 			GrassInput.Input.Expression = SmoothStepNode;
 			GrassOutputNode->GrassTypes.Add(GrassInput);
 		}
+
+		UTexture2D *LayerTex = LayerMetadata.LayerTexture.Get();
+		UTexture2D *LayerTexHeight = LayerMetadata.LayerTextureHeight.Get();
+		if (!(LayerTex->GetSizeX() == 256 || LayerTex->GetSizeX() == 512 || LayerTex->GetSizeX() == 1024)) continue;
 
 		UMaterialExpressionNamedRerouteUsage *NearRerouteUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1, NodeOffsetY, LandscapeMaterial);
 		NearRerouteUsage->Declaration = NearReroute;
@@ -1503,111 +1522,130 @@ void FWoWLandscapeImporterModule::CreateLandscapeMaterial(ALandscape *Landscape)
 		LerpUV->B.Expression = FarRerouteUsage;
 		LerpUV->Alpha.Expression = DepthFadeRerouteUsage;
 
-		UTexture2D *LayerTexture = LayerMetadata.LayerTexture.Get();
-		UMaterialExpressionTextureSampleParameter2DArray *TextureSampleArray = nullptr;
-		UMaterialExpressionTextureSample *TextureSample = nullptr;
-		bool bUseTextureArray = true;
+		UMaterialExpressionConstant *ArrayIndexConstant = CreateNode(NewObject<UMaterialExpressionConstant>(LandscapeMaterial), Section1 + 180, NodeOffsetY + 150, LandscapeMaterial);
+		UMaterialExpressionConstant *ArrayIndexConstantHeight = nullptr;
+		UMaterialExpressionAppendVector *AppendUVIndex = CreateNode(NewObject<UMaterialExpressionAppendVector>(LandscapeMaterial), Section1 + 290, NodeOffsetY, LandscapeMaterial);
+		AppendUVIndex->A.Expression = LerpUV;
+		AppendUVIndex->B.Expression = ArrayIndexConstant;
 
-		if (LayerTexture->GetSizeX() == 256 || LayerTexture->GetSizeX() == 512 || LayerTexture->GetSizeX() == 1024)
+		UMaterialExpressionTextureSampleParameter2DArray *TexSampleArray = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2DArray>(LandscapeMaterial), Section1 + 410, NodeOffsetY, LandscapeMaterial);
+		TexSampleArray->SamplerSource = ESamplerSourceMode::SSM_Wrap_WorldGroupSettings;
+		TexSampleArray->Coordinates.Expression = AppendUVIndex;
+
+		UMaterialExpressionTextureSampleParameter2DArray *TexSampleHeightArray = nullptr;
+		UMaterialExpressionMaterialFunctionCall *LevelsNode = nullptr;
+		if (LayerTexHeight)
 		{
-			UMaterialExpressionConstant *ArrayIndexConstant = CreateNode(NewObject<UMaterialExpressionConstant>(LandscapeMaterial), Section1 + 180, NodeOffsetY + 150, LandscapeMaterial);
+			ArrayIndexConstantHeight = CreateNode(NewObject<UMaterialExpressionConstant>(LandscapeMaterial), Section1 + 180, NodeOffsetY + 350, LandscapeMaterial);
+			UMaterialExpressionAppendVector *AppendUVIndexHeight = CreateNode(NewObject<UMaterialExpressionAppendVector>(LandscapeMaterial), Section1 + 290, NodeOffsetY + 250, LandscapeMaterial);
+			AppendUVIndexHeight->A.Expression = LerpUV;
+			AppendUVIndexHeight->B.Expression = ArrayIndexConstantHeight;
 
-			UMaterialExpressionAppendVector *AppendUVIndex = CreateNode(NewObject<UMaterialExpressionAppendVector>(LandscapeMaterial), Section1 + 290, NodeOffsetY, LandscapeMaterial);
-			AppendUVIndex->A.Expression = LerpUV;
-			AppendUVIndex->B.Expression = ArrayIndexConstant;
+			TexSampleHeightArray = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2DArray>(LandscapeMaterial), Section1 + 410, NodeOffsetY + 250, LandscapeMaterial);
+			TexSampleHeightArray->SamplerSource = ESamplerSourceMode::SSM_Wrap_WorldGroupSettings;
+			TexSampleHeightArray->Coordinates.Expression = AppendUVIndexHeight;
 
-			TextureSampleArray = CreateNode(NewObject<UMaterialExpressionTextureSampleParameter2DArray>(LandscapeMaterial), Section1 + 410, NodeOffsetY, LandscapeMaterial);
-			TextureSampleArray->SamplerSource = ESamplerSourceMode::SSM_Wrap_WorldGroupSettings;
-			TextureSampleArray->Coordinates.Expression = AppendUVIndex;
+			UMaterialFunction *ThreePointLevelsFunc = LoadObject<UMaterialFunction>(nullptr, TEXT("/Engine/Functions/Engine_MaterialFunctions02/3PointLevels.3PointLevels"));
+			LevelsNode = CreateNode(NewObject<UMaterialExpressionMaterialFunctionCall>(LandscapeMaterial), Section1 + 1050, NodeOffsetY, LandscapeMaterial);
+			LevelsNode->MaterialFunction = ThreePointLevelsFunc;
+			LevelsNode->UpdateFromFunctionResource();
+			LevelsNode->GetInput(0)->Expression = TexSampleHeightArray;
+			LevelsNode->GetInput(0)->OutputIndex = 4;
+			UMaterialExpressionNamedRerouteUsage *BlackValueUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1 + 900, NodeOffsetY + 50, LandscapeMaterial);
+			BlackValueUsage->Declaration = BlackValueReroute;
+			LevelsNode->GetInput(2)->Expression = BlackValueUsage;
+			UMaterialExpressionNamedRerouteUsage *GrayValueUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1 + 900, NodeOffsetY + 125, LandscapeMaterial);
+			GrayValueUsage->Declaration = GrayValueReroute;
+			LevelsNode->GetInput(3)->Expression = GrayValueUsage;
+			UMaterialExpressionNamedRerouteUsage *WhiteValueUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1 + 900, NodeOffsetY + 200, LandscapeMaterial);
+			WhiteValueUsage->Declaration = WhiteValueReroute;
+			LevelsNode->GetInput(4)->Expression = WhiteValueUsage;
+		}
 
-			if (LayerTexture->CompressionSettings == TC_Normalmap)
-				TextureSampleArray->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Normal;
+		if (LayerTex->CompressionSettings == TC_Normalmap)
+			TexSampleArray->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Normal;
 
-			if (LayerTexture->GetSizeX() == 256)
+		if (LayerTex->GetSizeX() == 256)
+		{
+			TexArray256Asset->SourceTextures.Add(LayerTex);
+			TexSampleArray->Texture = TexArray256Asset;
+			TexSampleArray->ParameterName = FName("TextureArray256");
+			ArrayIndexConstant->R = TexArrayIndex256;
+			TexArrayIndex256++;
+			if (LayerTexHeight)
 			{
-				TextureArray256Asset->SourceTextures.Add(LayerTexture);
-				TextureSampleArray->Texture = TextureArray256Asset;
-				TextureSampleArray->ParameterName = FName("TextureArray256");
-				ArrayIndexConstant->R = TextureArrayIndex256;
-				TextureArrayIndex256++;
-			}
-			else if (LayerTexture->GetSizeX() == 512)
-			{
-				TextureArray512Asset->SourceTextures.Add(LayerTexture);
-				TextureSampleArray->Texture = TextureArray512Asset;
-				TextureSampleArray->ParameterName = FName("TextureArray512");
-				ArrayIndexConstant->R = TextureArrayIndex512;
-				TextureArrayIndex512++;
-			}
-			else if (LayerTexture->GetSizeX() == 1024)
-			{
-				TextureArray1024Asset->SourceTextures.Add(LayerTexture);
-				TextureSampleArray->Texture = TextureArray1024Asset;
-				TextureSampleArray->ParameterName = FName("TextureArray1024");
-				ArrayIndexConstant->R = TextureArrayIndex1024;
-				TextureArrayIndex1024++;
+				TexArray256Asset->SourceTextures.Add(LayerTexHeight);
+				TexSampleHeightArray->Texture = TexArray256Asset;
+				TexSampleHeightArray->ParameterName = FName("TextureHeightArray256");
+				ArrayIndexConstantHeight->R = TexArrayIndex256;
+				TexArrayIndex256++;
 			}
 		}
-		else
+		else if (LayerTex->GetSizeX() == 512)
 		{
-			bUseTextureArray = false;
-			TextureSample = CreateNode(NewObject<UMaterialExpressionTextureSample>(LandscapeMaterial), Section1 + 350, NodeOffsetY, LandscapeMaterial);
-			TextureSample->Texture = LayerTexture;
-			TextureSample->Coordinates.Expression = LerpUV;
-			TextureSample->SamplerSource = ESamplerSourceMode::SSM_Wrap_WorldGroupSettings;
-
-			if (LayerTexture->CompressionSettings == TC_Normalmap)
-				TextureSample->SamplerType = EMaterialSamplerType::SAMPLERTYPE_Normal;
+			TexArray512Asset->SourceTextures.Add(LayerTex);
+			TexSampleArray->Texture = TexArray512Asset;
+			TexSampleArray->ParameterName = FName("TextureArray512");
+			ArrayIndexConstant->R = TexArrayIndex512;
+			TexArrayIndex512++;
+			if (LayerTexHeight)
+			{
+				TexArray512Asset->SourceTextures.Add(LayerTexHeight);
+				TexSampleHeightArray->Texture = TexArray512Asset;
+				TexSampleHeightArray->ParameterName = FName("TextureHeightArray512");
+				ArrayIndexConstantHeight->R = TexArrayIndex512;
+				TexArrayIndex512++;
+			}
+		}
+		else if (LayerTex->GetSizeX() == 1024)
+		{
+			TexArray1024Asset->SourceTextures.Add(LayerTex);
+			TexSampleArray->Texture = TexArray1024Asset;
+			TexSampleArray->ParameterName = FName("TextureArray1024");
+			ArrayIndexConstant->R = TexArrayIndex1024;
+			TexArrayIndex1024++;
+			if (LayerTexHeight)
+			{
+				TexArray1024Asset->SourceTextures.Add(LayerTexHeight);
+				TexSampleHeightArray->Texture = TexArray1024Asset;
+				TexSampleHeightArray->ParameterName = FName("TextureHeightArray1024");
+				ArrayIndexConstantHeight->R = TexArrayIndex1024;
+				TexArrayIndex1024++;
+			}
 		}
 
 		UMaterialExpressionMakeMaterialAttributes *MakeMaterialAttributesNode = CreateNode(NewObject<UMaterialExpressionMakeMaterialAttributes>(LandscapeMaterial), Section1 + 650, NodeOffsetY, LandscapeMaterial);
-		MakeMaterialAttributesNode->BaseColor.Expression = bUseTextureArray ? TextureSampleArray : TextureSample;
+		MakeMaterialAttributesNode->BaseColor.Expression = TexSampleArray;
 
-		UMaterialExpressionConstant *SpecularConstantNode = CreateNode(NewObject<UMaterialExpressionConstant>(LandscapeMaterial), Section1 + 400, NodeOffsetY + 300, LandscapeMaterial);
+		UMaterialExpressionConstant *SpecularConstantNode = CreateNode(NewObject<UMaterialExpressionConstant>(LandscapeMaterial), Section1, NodeOffsetY + 225, LandscapeMaterial);
 		SpecularConstantNode->R = 0.0f;
 		MakeMaterialAttributesNode->Specular.Expression = SpecularConstantNode;
-
-		UMaterialFunction *ThreePointLevelsFunc = LoadObject<UMaterialFunction>(nullptr, TEXT("/Engine/Functions/Engine_MaterialFunctions02/3PointLevels.3PointLevels"));
-		UMaterialExpressionMaterialFunctionCall *LevelsNode = CreateNode(NewObject<UMaterialExpressionMaterialFunctionCall>(LandscapeMaterial), Section1 + 1050, NodeOffsetY + 150, LandscapeMaterial);
-		LevelsNode->MaterialFunction = ThreePointLevelsFunc;
-		LevelsNode->UpdateFromFunctionResource();
-
-		LevelsNode->GetInput(0)->Expression = bUseTextureArray ? TextureSampleArray : TextureSample;
-		LevelsNode->GetInput(0)->OutputIndex = 4;
-
-		UMaterialExpressionNamedRerouteUsage *BlackValueUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1 + 900, NodeOffsetY + 250, LandscapeMaterial);
-		BlackValueUsage->Declaration = BlackValueReroute;
-		LevelsNode->GetInput(2)->Expression = BlackValueUsage;
-		UMaterialExpressionNamedRerouteUsage *GrayValueUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1 + 900, NodeOffsetY + 325, LandscapeMaterial);
-		GrayValueUsage->Declaration = GrayValueReroute;
-		LevelsNode->GetInput(3)->Expression = GrayValueUsage;
-		UMaterialExpressionNamedRerouteUsage *WhiteValueUsage = CreateNode(NewObject<UMaterialExpressionNamedRerouteUsage>(LandscapeMaterial), Section1 + 900, NodeOffsetY + 400, LandscapeMaterial);
-		WhiteValueUsage->Declaration = WhiteValueReroute;
-		LevelsNode->GetInput(4)->Expression = WhiteValueUsage;
+		UMaterialExpressionConstant *RoughnessConstantNode = CreateNode(NewObject<UMaterialExpressionConstant>(LandscapeMaterial), Section1, NodeOffsetY + 300, LandscapeMaterial);
+		RoughnessConstantNode->R = 0.4f;
+		MakeMaterialAttributesNode->Roughness.Expression = RoughnessConstantNode;
 
 		FLayerBlendInput LayerInput;
 		LayerInput.LayerName = LayerMetadata.LayerInfo->LayerName;
-		LayerInput.BlendType = LB_HeightBlend;
+		LayerInput.BlendType = LayerTexHeight ? LB_HeightBlend : LB_WeightBlend;
 		LayerInput.LayerInput.Expression = MakeMaterialAttributesNode;
 		LayerInput.HeightInput.Expression = LevelsNode;
 
 		LayerBlendNode->Layers.Add(LayerInput);
-
 		NodeOffsetY += 600;
 	}
 
-	TextureArray256Asset->UpdateSourceFromSourceTextures();
-	TextureArray256Asset->MipGenSettings = TMGS_FromTextureGroup;
-	TextureArray256Asset->MarkPackageDirty();
-	TextureArray256Asset->PostEditChange();
-	TextureArray512Asset->UpdateSourceFromSourceTextures();
-	TextureArray512Asset->MipGenSettings = TMGS_FromTextureGroup;
-	TextureArray512Asset->MarkPackageDirty();
-	TextureArray512Asset->PostEditChange();
-	TextureArray1024Asset->UpdateSourceFromSourceTextures();
-	TextureArray1024Asset->MipGenSettings = TMGS_FromTextureGroup;
-	TextureArray1024Asset->MarkPackageDirty();
-	TextureArray1024Asset->PostEditChange();
+	TexArray256Asset->UpdateSourceFromSourceTextures();
+	TexArray256Asset->MipGenSettings = TMGS_FromTextureGroup;
+	TexArray256Asset->MarkPackageDirty();
+	TexArray256Asset->PostEditChange();
+	TexArray512Asset->UpdateSourceFromSourceTextures();
+	TexArray512Asset->MipGenSettings = TMGS_FromTextureGroup;
+	TexArray512Asset->MarkPackageDirty();
+	TexArray512Asset->PostEditChange();
+	TexArray1024Asset->UpdateSourceFromSourceTextures();
+	TexArray1024Asset->MipGenSettings = TMGS_FromTextureGroup;
+	TexArray1024Asset->MarkPackageDirty();
+	TexArray1024Asset->PostEditChange();
 
 	UMaterialExpressionGetMaterialAttributes *GetMaterialAttributesNode = CreateNode(NewObject<UMaterialExpressionGetMaterialAttributes>(LandscapeMaterial), Section1 + 1800, 300, LandscapeMaterial);
 	GetMaterialAttributesNode->AttributeGetTypes.Add(FMaterialAttributeDefinitionMap::GetID(MP_BaseColor));

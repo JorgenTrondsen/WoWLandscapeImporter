@@ -47,6 +47,7 @@ struct LayerMetadata
 {
 	TObjectPtr<ULandscapeLayerInfoObject> LayerInfo;
 	TObjectPtr<UTexture2D> LayerTexture;
+	TObjectPtr<UTexture2D> LayerTextureHeight;
 	TObjectPtr<ULandscapeGrassType> FoliageAsset;
 };
 
@@ -114,7 +115,7 @@ private:
 	void UpdateStatusMessage(const FString &Message, bool bIsError = false);
 
 	/** Function to import and create landscape layers */
-	void ImportLayers(TMap<int, TPair<FString, int>> &TexturePaths, TArray<FString> &FoliageFiles, TArray<FString> &FoliageJSONs, UMaterial *ModelMaterial);
+	void ImportLayers(TMap<int, TTuple<FString, FString, int>> &TexturePaths, TArray<FString> &FoliageFiles, TArray<FString> &FoliageJSONs, UMaterial *ModelMaterial);
 
 	TArray<UStaticMesh *> ImportModels(TArray<FString> &ModelPaths, UMaterial *ModelMaterial, bool isFoliage = false);
 
