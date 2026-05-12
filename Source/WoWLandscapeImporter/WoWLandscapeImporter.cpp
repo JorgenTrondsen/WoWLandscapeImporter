@@ -318,21 +318,24 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 			FScopedSlowTask SlowTask(TileRows * TileColumns, LOCTEXT("ImportingWoWLandscape", "Importing WoW Landscape..."));
 			SlowTask.MakeDialog();
 
-			for (int Row = 0; Row < TileRows; Row++)
+			for (int Row = 0; Row < TileRows; Row += 2)
 			{
-				bool RowHasData = false;
-				for (int Column = 0; Column < TileColumns; Column++)
+				for (int Column = 0; Column < TileColumns; Column += 2)
 				{
 					SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("ImportingProxy", "Importing Proxy at (Row {1}), (Column {0})"), Column, Row));
-					if (TileGrid[Row][Column].HeightmapData.Num() == 0)
+					int RightTile = FMath::Min(Column + 1, TileColumns - 1);
+					int BottomTile = FMath::Min(Row + 1, TileRows - 1);
+					if (TileGrid[Row][Column].HeightmapData.Num() == 0 &&
+						TileGrid[BottomTile][Column].HeightmapData.Num() == 0 &&
+						TileGrid[Row][RightTile].HeightmapData.Num() == 0 &&
+						TileGrid[BottomTile][RightTile].HeightmapData.Num() == 0)
 						continue;
-					RowHasData = true;
+
 					TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> ProxyData = CreateProxyData(Row, Column);
 
 					// Create a LandscapeStreamingProxy actor for the current tiles
 					ALandscapeStreamingProxy *StreamingProxy = GEditor->GetEditorWorldContext().World()->SpawnActor<ALandscapeStreamingProxy>();
 					StreamingProxy->SetActorLabel(FString::Printf(TEXT("%d_%d_Proxy"), Column, Row));
-					StreamingProxy->SetActorScale3D(Landscape->GetActorScale3D());
 					StreamingProxy->SetActorLocation(Landscape->GetActorLocation());
 
 					// Prepare data for the Import function on the streaming proxy
@@ -345,15 +348,11 @@ void FWoWLandscapeImporterModule::ImportLandscape()
 					uint32 MinX = Column * 255;
 					uint32 MaxY = MinY + 510;
 					uint32 MaxX = MinX + 510;
-					StreamingProxy->Import(FGuid::NewGuid(), MinX, MinY, MaxX, MaxY, 2, 255, HeightDataPerLayer, nullptr, MaterialLayerDataPerLayer, ELandscapeImportAlphamapType::Layered);
+					StreamingProxy->Import(FGuid::NewGuid(), MinX, MinY, MaxX, MaxY, 2, 255, HeightDataPerLayer, nullptr, MaterialLayerDataPerLayer, ELandscapeImportAlphamapType::Additive);
 
 					StreamingProxy->SetLandscapeGuid(LandscapeGuid);
 					LandscapeInfo->RegisterActor(StreamingProxy);
-
-					Column++;
 				}
-				if (RowHasData)
-					Row++;
 			}
 		}
 		CreateLandscapeMaterial(Landscape);
@@ -1062,36 +1061,12 @@ TTuple<TArray<uint16>, TArray<FLandscapeImportLayerInfo>> FWoWLandscapeImporterM
 					ImportLayerInfo.LayerName = LayerMetadata->LayerInfo->LayerName;
 				}
 
-				if (CurrentLayer.ChannelIndex == -1) // Base Layer
+				switch (CurrentLayer.ChannelIndex)
 				{
-					int TotalWeight = 0;
-					for (int OtherLayerIndex = 0; OtherLayerIndex < CurrentTile.Chunks[ChunkIndex].Layers.Num(); OtherLayerIndex++)
-					{
-						const Layer &OtherLayer = CurrentTile.Chunks[ChunkIndex].Layers[OtherLayerIndex];
-						if (OtherLayer.ChannelIndex != -1)
-						{
-							int OtherPNG = OtherLayer.ImageIndex;
-							FColor OtherPixel = TileGrid[CurrentRow][CurrentColumn].AlphamapPNGs[OtherPNG][TileIndex];
-							switch (OtherLayer.ChannelIndex)
-							{
-							case 0: TotalWeight += OtherPixel.R; break;
-							case 1: TotalWeight += OtherPixel.G; break;
-							case 2: TotalWeight += OtherPixel.B; break;
-							case 3: TotalWeight += OtherPixel.A; break;
-							}
-						}
-					}
-					ImportLayerInfo.LayerData[ProxyIndex] = 255 - TotalWeight;
-				}
-				else
-				{
-					switch (CurrentLayer.ChannelIndex)
-					{
-					case 0: ImportLayerInfo.LayerData[ProxyIndex] = Pixel.R; break;
-					case 1: ImportLayerInfo.LayerData[ProxyIndex] = Pixel.G; break;
-					case 2: ImportLayerInfo.LayerData[ProxyIndex] = Pixel.B; break;
-					case 3: ImportLayerInfo.LayerData[ProxyIndex] = Pixel.A; break;
-					}
+				case -1: ImportLayerInfo.LayerData[ProxyIndex] = 255 - Pixel.R - Pixel.G - Pixel.B; break;
+				case 0: ImportLayerInfo.LayerData[ProxyIndex] = Pixel.R; break;
+				case 1: ImportLayerInfo.LayerData[ProxyIndex] = Pixel.G; break;
+				case 2: ImportLayerInfo.LayerData[ProxyIndex] = Pixel.B; break;
 				}
 			}
 			TileX++;
